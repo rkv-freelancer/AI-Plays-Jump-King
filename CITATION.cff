@@ -1,0 +1,57 @@
+cff-version: 1.2.0
+message: "If you use or reference this project, please cite the following works."
+
+references:
+  - type: article
+    title: "CleanRL: High-quality Single-file Implementations of Deep Reinforcement Learning Algorithms"
+    authors:
+      - family-names: Huang
+        given-names: Shengyi
+      - family-names: Dossa
+        given-names: Rousslan Fernand Julien
+      - family-names: Ye
+        given-names: Chang
+      - family-names: Braga
+        given-names: Jeff
+      - family-names: Chakraborty
+        given-names: Dipam
+      - family-names: Mehta
+        given-names: Kinal
+      - family-names: Araújo
+        given-names: João G.M.
+    journal: Journal of Machine Learning Research
+    volume: 23
+    issue: 274
+    pages: "1-18"
+    year: 2022
+    url: "http://jmlr.org/papers/v23/21-1342.html"
+
+  - type: article
+    title: "Proximal Policy Optimization Algorithms"
+    authors:
+      - family-names: Schulman
+        given-names: John
+      - family-names: Wolski
+        given-names: Filip
+      - family-names: Dhariwal
+        given-names: Prafulla
+      - family-names: Radford
+        given-names: Alec
+      - family-names: Klimov
+        given-names: Oleg
+    year: 2017
+    url: "https://arxiv.org/abs/1707.06347"
+
+  - type: article
+    title: "Exploration by Random Network Distillation"
+    authors:
+      - family-names: Burda
+        given-names: Yuri
+      - family-names: Edwards
+        given-names: Harrison
+      - family-names: Storkey
+        given-names: Amos
+      - family-names: Klimov
+        given-names: Oleg
+    year: 2018
+    url: "https://arxiv.org/abs/1810.12894"
