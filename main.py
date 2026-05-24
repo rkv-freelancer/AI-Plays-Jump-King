@@ -51,8 +51,8 @@ def launch_browser(headless: bool = False) -> webdriver.Chrome:
     return driver
 
 
-def wait_for_game(driver: webdriver.Chrome, timeout: int = 15):
-    """Poll until the p5.js setup() has run and `player` exists in JS."""
+def wait_for_game(driver: webdriver.Chrome, timeout: int = 5):
+    """Poll until the `p5.js` setup() has run and `player` exists in JS."""
     print("Waiting for game to load...")
     
     deadline = time.time() + timeout
