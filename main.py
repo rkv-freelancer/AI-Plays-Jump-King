@@ -98,6 +98,10 @@ def main():
 
     # 5. Create the Gymnasium environment
     env = JumpKingEnv(driver, frame_skip=4)
+    
+    # TODO:
+    # 6. Create an RL Agent
+    agent = None
 
     # ------------------------------------------------------------------
     # Sanity check: run one random-action episode and print state info

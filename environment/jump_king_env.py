@@ -117,7 +117,7 @@ class JumpKingEnv(gym.Env):
     # Gymnasium API
     # ------------------------------------------------------------------
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=42, options=None):
         super().reset(seed=seed)
         self.driver.execute_script("player.ResetPlayer()")
         self._prev_jump_held = False
