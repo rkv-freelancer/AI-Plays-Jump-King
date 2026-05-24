@@ -1,0 +1,21 @@
+name: jump_king_rl--personal_proj
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy>=1.24
+  - pip
+  - pip:
+      # Browser automation (selenium-manager handles chromedriver automatically)
+      - selenium>=4.6
+
+      # RL environment interface
+      - gymnasium>=0.29
+
+      # Neural networks — MPS-enabled build for Apple Silicon
+      - torch>=2.1
+      - torchvision>=0.16
+
+      # PPO/RND training utilities (used when we build the training loop)
+      - tensorboard
