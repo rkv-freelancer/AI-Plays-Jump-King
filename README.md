@@ -1,9 +1,9 @@
 ## Project
 
-## How does it work (Trained using Reinforcement Learning and Imitation Learning)
-Sample Efficient Actor-Critic With Experience Replay [https://arxiv.org/pdf/1611.01224] - On/Off Policy Learning
-Alpha Go - Supervised Learning of Policy Networks [https://arxiv.org/pdf/1704.03732]
-DeepMind - Deep Q-learning from Demonstrations [https://cdn.aaai.org/ojs/11757/11757-13-15285-1-2-20201228.pdf]
+## How does it work 
+Trained using Reinforcement Learning and Imitation Learning:
+- Sample Efficient Actor-Critic With Experience Replay [https://arxiv.org/pdf/1611.01224] - On/Off Policy Learning
+- Alpha Go - Supervised Learning of Policy Networks [https://arxiv.org/pdf/1704.03732]
 
 **Encode each video/rounds as experiences **
 Game UI -> Adapter 
@@ -14,7 +14,6 @@ Adapter -> Game State (Selenium) -> RL Environment (PY) && RL Agent (PY)
 - Start with a modest amount of human gameplay (10-20 successful runs)
 - Pre-train policy network via behavioral cloning
 - Fine-tune with RL 
-
 
 ## State Representation
 Variables: 
@@ -36,10 +35,10 @@ Action_Type: int   # 0: No action, 1: Walk left, 2: Walk right, 3: Start chargin
 Direction_Key: int # 0: None, 1: Left, 2: Right (applied during charging or walking)
 
 ## For Imitation Learning from Demonstrations (Create a Script for this case)
-# Record these from human gameplay:
-Key_Pressed: list[bool]  # [Left, Right, Jump]
-Key_Duration: float      # How long jump was held (for jumps only)
-Direction_During_Charge: int  # 0: None, 1: Left, 2: Right 
+Record these from human gameplay:
+- Key_Pressed: list[bool]  # [Left, Right, Jump]
+- Key_Duration: float      # How long jump was held (for jumps only)
+- Direction_During_Charge: int  # 0: None, 1: Left, 2: Right 
 
 # Network Structure Feed-Forward Neural Network: 
 Input Layer (state) → Hidden Layers → Output Layer (action probabilities)
@@ -47,10 +46,6 @@ Input Layer (state) → Hidden Layers → Output Layer (action probabilities)
 # Dueling Deep Q-Learning (DQN) Architecture: 
 Input Layer → Shared Feature Layers → [Value Stream + Advantage Stream] → Q-values
 
-
-
 # Agenda
-- Implemnt Experience Replay 
-- Add Hyperparameters
-- Implement Epsilon-Greedy
-- Train DQN on Jump King
+- Connect with Modal (Cloud GPU Computing)
+- Train PPO on Jump King
