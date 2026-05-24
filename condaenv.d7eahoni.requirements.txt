@@ -1,5 +1,0 @@
-selenium>=4.6
-gymnasium>=0.29
-torch>=2.1
-torchvision>=0.16
-tensorboard
