@@ -1,16 +1,19 @@
-import pyautogui 
+import pyautogui as pg
 import time
 import random
 
 class MovementController: 
-    def __init__(self, key_hold_time=0.1):
+    def __init__(self, key_hold_time=0.1, time_delay=0.1):
         """
         Initialize the movement controller
         
         Args:
             key_hold_time: How long to hold down a key in seconds
         """
-        self.key_hold_time = key_hold_time
+        self.time_delay = time_delay  # Default speed for movement actions
+        self.key_hold_time = key_hold_time # Default time to hold down a key
+        
+        # Define the actions and their corresponding methods
         self.actions = {
             'left': self._move_left,
             'right': self._move_right,
@@ -20,27 +23,27 @@ class MovementController:
 
     def _move_left(self):
         """Press the left arrow key."""
-        pyautogui.keyDown('left')
-        time.sleep(self.speed)
-        pyautogui.keyUp('left')
+        pg.keyDown('left')
+        time.sleep(self.time_delay)
+        pg.keyUp('left')
         
     def _move_right(self):
         """Press the right arrow key."""
-        pyautogui.keyDown('right')
-        time.sleep(self.speed)
-        pyautogui.keyUp('right')
+        pg.keyDown('right')
+        time.sleep(self.time_delay)
+        pg.keyUp('right')
         
     def _jump(self):
         """Press the space bar to jump."""
-        pyautogui.keyDown('space')
+        pg.keyDown('space')
         time.sleep(self.key_hold_time)
-        pyautogui.keyUp('space')
+        pg.keyUp('space')
         
     def _charged_jump(self, charged_time = 0.5):
         """Press the space bar for a charged jump."""
-        pyautogui.keyDown('space')
+        pg.keyDown('space')
         time.sleep(charged_time)
-        pyautogui.keyUp('space')
+        pg.keyUp('space')
         
     def execute_action(self, action, **kwargs):
         """
@@ -52,7 +55,7 @@ class MovementController:
         if action in self.actions:
             if kwargs:
                 self.key_hold_time = kwargs.get('key_hold_time', self.key_hold_time)
-                self.speed = kwargs.get('speed', self.key_hold_time)
+                self.time_delay = kwargs.get('speed', self.key_hold_time)
                 self.actions[action](**kwargs)
             else: 
                 self.actions[action]()
