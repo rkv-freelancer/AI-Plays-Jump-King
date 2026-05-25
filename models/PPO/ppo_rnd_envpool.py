@@ -17,6 +17,11 @@ from gym.wrappers.normalize import RunningMeanStd
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
+# env.observation_space.shape[0]
+OBS_DIM   = 9   
+# RND embedding size
+EMBED_DIM = 64  
+
 @dataclass
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
@@ -33,11 +38,8 @@ class Args:
     """the wandb's project name"""
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
-    capture_video: bool = False
-    """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MontezumaRevenge-v5"
     """the id of the environment"""
     total_timesteps: int = 2000000000
     """total timesteps of the experiments"""
@@ -45,7 +47,7 @@ class Args:
     """the learning rate of the optimizer"""
     num_envs: int = 128
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 512
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -81,7 +83,7 @@ class Args:
     """coefficient of intrinsic reward"""
     int_gamma: float = 0.99
     """Intrinsic reward discount rate"""
-    num_iterations_obs_norm_init: int = 50
+    num_iterations_obs_norm_init: int = 10
     """number of iterations to initialize the observations normalization parameters"""
 
     # to be filled in runtime
@@ -135,32 +137,26 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 
 
 class Agent(nn.Module):
-    def __init__(self, envs):
+    def __init__(self, num_actions):
         super().__init__()
         self.network = nn.Sequential(
-            layer_init(nn.Conv2d(4, 32, 8, stride=4)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(32, 64, 4, stride=2)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(64, 64, 3, stride=1)),
-            nn.ReLU(),
-            nn.Flatten(),
-            layer_init(nn.Linear(64 * 7 * 7, 256)),
-            nn.ReLU(),
-            layer_init(nn.Linear(256, 448)),
-            nn.ReLU(),
+            layer_init(nn.Linear(9, 256)),
+            nn.ReLU(), 
+            layer_init(nn.Linear(256, 256)),
+            nn.ReLU(), 
         )
-        self.extra_layer = nn.Sequential(layer_init(nn.Linear(448, 448), std=0.1), nn.ReLU())
+        
+        self.extra_layer = nn.Sequential(layer_init(nn.Linear(256, 256), std=0.1), nn.ReLU())
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(448, 448), std=0.01),
+            layer_init(nn.Linear(256, 256), std=0.01),
             nn.ReLU(),
-            layer_init(nn.Linear(448, envs.single_action_space.n), std=0.01),
+            layer_init(nn.Linear(256, num_actions), std=0.01),
         )
-        self.critic_ext = layer_init(nn.Linear(448, 1), std=0.01)
-        self.critic_int = layer_init(nn.Linear(448, 1), std=0.01)
+        self.critic_ext = layer_init(nn.Linear(256, 1), std=0.01)
+        self.critic_int = layer_init(nn.Linear(256, 1), std=0.01)
 
     def get_action_and_value(self, x, action=None):
-        hidden = self.network(x / 255.0)
+        hidden = self.network(x)
         logits = self.actor(hidden)
         probs = Categorical(logits=logits)
         features = self.extra_layer(hidden)
@@ -175,7 +171,7 @@ class Agent(nn.Module):
         )
 
     def get_value(self, x):
-        hidden = self.network(x / 255.0)
+        hidden = self.network(x)
         features = self.extra_layer(hidden)
         return self.critic_ext(features + hidden), self.critic_int(features + hidden)
 
@@ -187,34 +183,20 @@ class RNDModel(nn.Module):
         self.input_size = input_size
         self.output_size = output_size
 
-        feature_output = 7 * 7 * 64
-
         # Prediction network
         self.predictor = nn.Sequential(
-            layer_init(nn.Conv2d(in_channels=1, out_channels=32, kernel_size=8, stride=4)),
-            nn.LeakyReLU(),
-            layer_init(nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2)),
-            nn.LeakyReLU(),
-            layer_init(nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1)),
-            nn.LeakyReLU(),
-            nn.Flatten(),
-            layer_init(nn.Linear(feature_output, 512)),
+            layer_init(nn.Linear(self.input_size, 256)),
             nn.ReLU(),
-            layer_init(nn.Linear(512, 512)),
+            layer_init(nn.Linear(256, 256)),
             nn.ReLU(),
-            layer_init(nn.Linear(512, 512)),
+            layer_init(nn.Linear(256, self.output_size)),
         )
 
         # Target network
         self.target = nn.Sequential(
-            layer_init(nn.Conv2d(in_channels=1, out_channels=32, kernel_size=8, stride=4)),
-            nn.LeakyReLU(),
-            layer_init(nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2)),
-            nn.LeakyReLU(),
-            layer_init(nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1)),
-            nn.LeakyReLU(),
-            nn.Flatten(),
-            layer_init(nn.Linear(feature_output, 512)),
+            layer_init(nn.Linear(self.input_size, 256)),
+            nn.ReLU(),
+            layer_init(nn.Linear(256, self.output_size)),
         )
 
         # target network is not trainable
@@ -242,7 +224,8 @@ class RewardForwardFilter:
 
 
 if __name__ == "__main__":
-    args = tyro.cli(Args)
+    # Use defaults directly
+    args = Args()
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
@@ -273,9 +256,9 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
-    # env setup
+    # TODO: Setup server
+    # 1. env setup
     envs = envpool.make(
-        args.env_id,
         env_type="gym",
         num_envs=args.num_envs,
         episodic_life=True,
@@ -283,14 +266,16 @@ if __name__ == "__main__":
         seed=args.seed,
         repeat_action_probability=0.25,
     )
+    
     envs.num_envs = args.num_envs
     envs.single_action_space = envs.action_space
     envs.single_observation_space = envs.observation_space
+    
     envs = RecordEpisodeStatistics(envs)
     assert isinstance(envs.action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    agent = Agent(envs).to(device)
-    rnd_model = RNDModel(4, envs.single_action_space.n).to(device)
+    agent = Agent(envs.action_space.n).to(device)
+    rnd_model = RNDModel(OBS_DIM, EMBED_DIM).to(device)
     combined_parameters = list(agent.parameters()) + list(rnd_model.predictor.parameters())
     optimizer = optim.Adam(
         combined_parameters,
@@ -299,7 +284,7 @@ if __name__ == "__main__":
     )
 
     reward_rms = RunningMeanStd()
-    obs_rms = RunningMeanStd(shape=(1, 1, 84, 84))
+    obs_rms = RunningMeanStd(shape=(OBS_DIM, ))
     discounted_reward = RewardForwardFilter(args.int_gamma)
 
     # ALGO Logic: Storage setup

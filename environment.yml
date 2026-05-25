@@ -22,3 +22,4 @@ dependencies:
 
       # PPO/RND training utilities (used when we build the training loop)
       - tensorboard
+      - wandb
