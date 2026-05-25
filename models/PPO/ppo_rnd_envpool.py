@@ -5,17 +5,20 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
-import envpool
 import gymnasium as gym
+from gymnasium.wrappers.normalize import RunningMeanStd
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import tyro
-from gym.wrappers.normalize import RunningMeanStd
+
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
+
+# Environment
+from environment.jump_king_env import JumpKingEnv
 
 # env.observation_space.shape[0]
 OBS_DIM   = 9   
