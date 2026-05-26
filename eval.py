@@ -83,9 +83,16 @@ def run_episode(env, agent, device, greedy: bool = False):
                 f"reward={reward:.3f}"
             )
 
-        terminated = bool(state.get("is_dead", False))
-        if terminated:
-            return total_reward, steps
+        # Eval bypasses env.step(), so check termination / success directly.
+        success    = env._is_at_princess(state)
+        terminated = bool(state.get("is_dead", False)) or success
+        truncated  = steps >= 2000   # mirrors MAX_EPISODE_STEPS in the env
+
+        if success:
+            print("  *** PRINCESS REACHED! ***")
+
+        if terminated or truncated:
+            return total_reward, steps, success
 
 
 def main():
@@ -118,8 +125,9 @@ def main():
     episode = 1
     try:
         while True:
-            reward, steps = run_episode(env, agent, device, greedy=greedy)
-            print(f"Episode {episode:3d} | steps={steps:5d} | total_reward={reward:.2f}\n")
+            reward, steps, success = run_episode(env, agent, device, greedy=greedy)
+            outcome = "SUCCESS" if success else "truncated" if steps >= 2000 else "fell"
+            print(f"Episode {episode:3d} | steps={steps:5d} | total_reward={reward:.2f} | {outcome}\n")
             episode += 1
     except KeyboardInterrupt:
         print("\nStopped.")
