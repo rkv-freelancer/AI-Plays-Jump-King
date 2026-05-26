@@ -24,13 +24,15 @@ import torch.optim as optim
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
-# Environment
+# Environment (RL & GPU)
 from environment.jump_king_env import JumpKingEnv
+import modal
 
 # Server 
 from server.main import launch_server, launch_browser, wait_for_game, setup_game
-PORT = 8000
 
+# Constants
+PORT = 8000
 # env.observation_space.shape[0]
 OBS_DIM   = 9   
 # RND embedding size
@@ -309,10 +311,14 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     
-    # TODO: Assumes `cuda` is installed
-    # torch.backends.cudnn.deterministic = args.torch_deterministic
-    # device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    # CUDA (Modal/cloud GPU) → MPS (Apple Silicon) → CPU
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() and args.cuda else
+        "mps"  if torch.backends.mps.is_available() else
+        "cpu"
+    )
+    if device.type == "cuda":
+        torch.backends.cudnn.deterministic = args.torch_deterministic
     
     if args.torch_deterministic:
         torch.use_deterministic_algorithms(True)
@@ -322,7 +328,7 @@ if __name__ == "__main__":
     launch_server()
 
     # 2. Open browser and navigate to the game
-    driver = launch_browser(headless=False)
+    driver = launch_browser(headless=True)   # no rendering during training — saves ~30% wall time
     driver.get(f"http://localhost:{PORT}")
 
     # 3. Wait for p5.js setup() to finish and player to be created
@@ -414,16 +420,20 @@ if __name__ == "__main__":
             logprobs[step] = logprob
 
             # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, reward, terminated, truncated, info = env.step(action.item())            
-            
-            if terminated or truncated:
+            next_obs, reward, terminated, truncated, info = env.step(action.item())
+            done = terminated or truncated
+
+            if done:
                 print(f"global_step={global_step}, return={info['episode']['r']:.2f}, length={info['episode']['l']}")
                 writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                 writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-            
+                # Reset env so the NEXT rollout step starts from a fresh state.
+                # Without this, the env keeps stepping from the terminal state
+                # and one "episode" spans the whole training run.
+                next_obs, _ = env.reset()
+
             rewards[step] = torch.tensor(reward).to(device).view(-1)
-            done = terminated or truncated
-            
+
             next_obs = torch.Tensor(next_obs).unsqueeze(0).to(device)  # (9,) → (1, 9)
             next_done = torch.Tensor([done]).to(device)                 # scalar → (1,)
             
