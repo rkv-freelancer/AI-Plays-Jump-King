@@ -3,6 +3,7 @@ import socketserver
 import threading
 import time
 import os
+import functools
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -15,9 +16,7 @@ PORT = 8000
 # ------------------------------------------------------------------
 
 def start_server():
-    os.chdir(GAME_DIR)
-    handler = http.server.SimpleHTTPRequestHandler
-    # allow_reuse_address prevents "address already in use" on restart
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=GAME_DIR)
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", PORT), handler) as httpd:
         print(f"Game server running at http://localhost:{PORT}")
@@ -68,11 +67,20 @@ def wait_for_game(driver: webdriver.Chrome, timeout: int = 5):
 def setup_game(driver: webdriver.Chrome):
     """
     Pause the p5.js draw loop so we control every physics step manually.
-    Also ensure the game is in single-player mode.
+    Used for training — no rendering needed, maximum speed.
     """
     driver.execute_script("""
         testingSinglePlayer = true;
         noLoop();
     """)
+
+
+def setup_eval_game(driver: webdriver.Chrome):
+    """
+    Set single-player mode and leave the p5.js draw loop running.
+    Used for eval — the browser renders at its natural frame rate.
+    noLoop() is NOT called, so redraw() is not needed.
+    """
+    driver.execute_script("testingSinglePlayer = true;")
 
     
