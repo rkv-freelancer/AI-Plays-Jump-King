@@ -142,5 +142,11 @@ class JumpKingEnv(gym.Env):
 
         return obs, reward, terminated, truncated, {"state": state}
 
+    def render(self):
+        # Trigger one p5.js draw() call to update the canvas.
+        # Required because noLoop() pauses the draw loop — physics advances
+        # via player.Update() but the display only updates when redraw() is called.
+        self.driver.execute_script("redraw()")
+
     def close(self):
         self.driver.quit()
