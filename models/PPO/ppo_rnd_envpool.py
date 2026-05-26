@@ -20,6 +20,9 @@ from torch.utils.tensorboard import SummaryWriter
 # Environment
 from environment.jump_king_env import JumpKingEnv
 
+# Server 
+from server.main import launch_server, launch_browser, wait_for_game, setup_game
+
 # env.observation_space.shape[0]
 OBS_DIM   = 9   
 # RND embedding size
@@ -29,111 +32,109 @@ EMBED_DIM = 64
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 1
+    
+    seed: int = 42
     """seed of the experiment"""
+    
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
+    
+    # TODO: Run on `Modal` GPU cloud
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
+    
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
+    
     wandb_project_name: str = "cleanRL"
     """the wandb's project name"""
+    
     wandb_entity: str = None
     """the entity (team) of wandb's project"""
 
     # Algorithm specific arguments
-    """the id of the environment"""
     total_timesteps: int = 2000000000
     """total timesteps of the experiments"""
+    
     learning_rate: float = 1e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 128
+    
+    num_envs: int = 1
     """the number of parallel game environments"""
+    
     num_steps: int = 512
     """the number of steps to run in each environment per policy rollout"""
+    
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
+    
     gamma: float = 0.999
     """the discount factor gamma"""
+    
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
+    
     num_minibatches: int = 4
     """the number of mini-batches"""
+    
     update_epochs: int = 4
     """the K epochs to update the policy"""
+    
     norm_adv: bool = True
     """Toggles advantages normalization"""
+    
+    # The PPO clipping range. The policy update is constrained so the new policy can't deviate more than 10% from the old one (ratio stays in [0.9, 1.1]). This is the core stability mechanism of PPO.
     clip_coef: float = 0.1
     """the surrogate clipping coefficient"""
+    
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
+    
+    # The entropy bonus weight. Adds −ent_coef × H(π) to the loss, encouraging the policy to stay stochastic (explore). Too high → random forever. Too low → collapses to one action early.
     ent_coef: float = 0.001
     """coefficient of the entropy"""
+    
     vf_coef: float = 0.5
     """coefficient of the value function"""
+    
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
+    
     target_kl: float = None
     """the target KL divergence threshold"""
 
     # RND arguments
+    # Only 25% of the mini-batch randomly updates the RND predictor each pass. Prevents the predictor from memorising the training distribution too quickly.
     update_proportion: float = 0.25
     """proportion of exp used for predictor update"""
+    
+    # How to weight intrinsic (RND novelty) vs extrinsic (height reward) advantage signals when combining them.
     int_coef: float = 1.0
     """coefficient of extrinsic reward"""
+    
     ext_coef: float = 2.0
     """coefficient of intrinsic reward"""
+    
     int_gamma: float = 0.99
     """Intrinsic reward discount rate"""
+    
     num_iterations_obs_norm_init: int = 10
     """number of iterations to initialize the observations normalization parameters"""
 
     # to be filled in runtime
     batch_size: int = 0
     """the batch size (computed in runtime)"""
+    
     minibatch_size: int = 0
     """the mini-batch size (computed in runtime)"""
+    
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
 
 
-class RecordEpisodeStatistics(gym.Wrapper):
-    def __init__(self, env, deque_size=100):
-        super().__init__(env)
-        self.num_envs = getattr(env, "num_envs", 1)
-        self.episode_returns = None
-        self.episode_lengths = None
-
-    def reset(self, **kwargs):
-        observations = super().reset(**kwargs)
-        self.episode_returns = np.zeros(self.num_envs, dtype=np.float32)
-        self.episode_lengths = np.zeros(self.num_envs, dtype=np.int32)
-        self.lives = np.zeros(self.num_envs, dtype=np.int32)
-        self.returned_episode_returns = np.zeros(self.num_envs, dtype=np.float32)
-        self.returned_episode_lengths = np.zeros(self.num_envs, dtype=np.int32)
-        return observations
-
-    def step(self, action):
-        observations, rewards, dones, infos = super().step(action)
-        self.episode_returns += infos["reward"]
-        self.episode_lengths += 1
-        self.returned_episode_returns[:] = self.episode_returns
-        self.returned_episode_lengths[:] = self.episode_lengths
-        self.episode_returns *= 1 - infos["terminated"]
-        self.episode_lengths *= 1 - infos["terminated"]
-        infos["r"] = self.returned_episode_returns
-        infos["l"] = self.returned_episode_lengths
-        return (
-            observations,
-            rewards,
-            dones,
-            infos,
-        )
-
-
 # ALGO LOGIC: initialize agent here:
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+    # The weight matrix is set so its rows are mutually perpendicular (orthogonal) with a magnitude controlled by std. This prevents the gradient signal from vanishing or exploding in early training. Gradients flow evenly through the network rather than amplifying or shrinking per layer.
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
@@ -143,18 +144,23 @@ class Agent(nn.Module):
     def __init__(self, num_actions):
         super().__init__()
         self.network = nn.Sequential(
-            layer_init(nn.Linear(9, 256)),
+            layer_init(nn.Linear(OBS_DIM, 256)),
             nn.ReLU(), 
             layer_init(nn.Linear(256, 256)),
             nn.ReLU(), 
         )
         
-        self.extra_layer = nn.Sequential(layer_init(nn.Linear(256, 256), std=0.1), nn.ReLU())
+        self.extra_layer = nn.Sequential(
+            layer_init(nn.Linear(256, 256), std=0.1), 
+            nn.ReLU()
+        )
+        
         self.actor = nn.Sequential(
             layer_init(nn.Linear(256, 256), std=0.01),
             nn.ReLU(),
             layer_init(nn.Linear(256, num_actions), std=0.01),
         )
+        
         self.critic_ext = layer_init(nn.Linear(256, 1), std=0.01)
         self.critic_int = layer_init(nn.Linear(256, 1), std=0.01)
 
@@ -225,14 +231,15 @@ class RewardForwardFilter:
             self.rewems = self.rewems * self.gamma + rews
         return self.rewems
 
-
 if __name__ == "__main__":
     # Use defaults directly
     args = Args()
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    
+    run_name = f"JumpKing__{args.exp_name}__{args.seed}__{int(time.time())}"
+    
     if args.track:
         import wandb
 
@@ -255,30 +262,34 @@ if __name__ == "__main__":
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    
+    # TODO: Assumes `cuda` is installed
     torch.backends.cudnn.deterministic = args.torch_deterministic
+    # device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    # -- Setup Server --
+    # 1. Start server first — driver.get() needs it running
+    launch_server()
 
-    # TODO: Setup server
-    # 1. env setup
-    envs = envpool.make(
-        env_type="gym",
-        num_envs=args.num_envs,
-        episodic_life=True,
-        reward_clip=True,
-        seed=args.seed,
-        repeat_action_probability=0.25,
-    )
+    # 2. Open browser and navigate to the game
+    driver = launch_browser(headless=False)
+    driver.get(f"http://localhost:{PORT}")
+
+    # 3. Wait for p5.js setup() to finish and player to be created
+    wait_for_game(driver)
+
+    # 4. Pause the draw loop — we will step physics manually via execute_script
+    setup_game(driver)
     
-    envs.num_envs = args.num_envs
-    envs.single_action_space = envs.action_space
-    envs.single_observation_space = envs.observation_space
-    
-    envs = RecordEpisodeStatistics(envs)
-    assert isinstance(envs.action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    # -- Setup RL Environment --
+    env = JumpKingEnv(driver, frame_skip=4)
+    env = gym.wrappers.RecordEpisodeStatistics(env)  
+    assert isinstance(env.action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    agent = Agent(envs.action_space.n).to(device)
+    agent = Agent(env.action_space.n).to(device)
     rnd_model = RNDModel(OBS_DIM, EMBED_DIM).to(device)
+    
     combined_parameters = list(agent.parameters()) + list(rnd_model.predictor.parameters())
     optimizer = optim.Adam(
         combined_parameters,
@@ -291,8 +302,8 @@ if __name__ == "__main__":
     discounted_reward = RewardForwardFilter(args.int_gamma)
 
     # ALGO Logic: Storage setup
-    obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
-    actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
+    obs = torch.zeros((args.num_steps, args.num_envs) + env.single_observation_space.shape).to(device)
+    actions = torch.zeros((args.num_steps, args.num_envs) + env.single_action_space.shape).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     curiosity_rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -304,15 +315,17 @@ if __name__ == "__main__":
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    next_obs = torch.Tensor(envs.reset()).to(device)
+    next_obs_np, _ = env.reset()
+    # add num_envs dim → (1, 9)
+    next_obs = torch.Tensor(next_obs_np).unsqueeze(0).to(device)  
     next_done = torch.zeros(args.num_envs).to(device)
     num_updates = args.total_timesteps // args.batch_size
 
     print("Start to initialize observation normalization parameter.....")
     next_ob = []
     for step in range(args.num_steps * args.num_iterations_obs_norm_init):
-        acs = np.random.randint(0, envs.single_action_space.n, size=(args.num_envs,))
-        s, r, d, _ = envs.step(acs)
+        acs = np.random.randint(0, env.single_action_space.n, size=(args.num_envs,))
+        s, r, d, _ = env.step(acs)
         next_ob += s[:, 3, :, :].reshape([-1, 1, 84, 84]).tolist()
 
         if len(next_ob) % (args.num_steps * args.num_envs) == 0:
@@ -340,15 +353,23 @@ if __name__ == "__main__":
                     value_ext.flatten(),
                     value_int.flatten(),
                 )
-                action, logprob, _, _, _ = agent.get_action_and_value(obs[step])
+                # Samples a fresh action from current policy
+                action, logprob, entropy, v_ext, v_int = agent.get_action_and_value(obs[step])
 
             actions[step] = action
             logprobs[step] = logprob
 
             # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, reward, done, info = envs.step(action.cpu().numpy())
+            next_obs, reward, terminated, truncated, info = env.step(action.cpu().numpy())
+            
+            if terminated or truncated:
+                print(f"global_step={global_step}, return={info['episode']['r']:.2f}, length={info['episode']['l']}")
+                writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+            
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
+            
             rnd_next_obs = (
                 (
                     (next_obs[:, 3, :, :].reshape(args.num_envs, 1, 84, 84) - torch.from_numpy(obs_rms.mean).to(device))
@@ -417,7 +438,7 @@ if __name__ == "__main__":
             int_returns = int_advantages + int_values
 
         # flatten the batch
-        b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
+        b_obs = obs.reshape((-1,) + env.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape(-1)
         b_ext_advantages = ext_advantages.reshape(-1)
@@ -457,9 +478,13 @@ if __name__ == "__main__":
                 forward_loss = (forward_loss * mask).sum() / torch.max(
                     mask.sum(), torch.tensor([1], device=device, dtype=torch.float32)
                 )
+                
+                # Re-evaluates the same stored action under the UPDATED policy
+                # newlogprob vs stored logprob → the PPO ratio
                 _, newlogprob, entropy, new_ext_values, new_int_values = agent.get_action_and_value(
                     b_obs[mb_inds], b_actions.long()[mb_inds]
                 )
+                
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
@@ -522,5 +547,5 @@ if __name__ == "__main__":
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-    envs.close()
+    env.close()
     writer.close()
