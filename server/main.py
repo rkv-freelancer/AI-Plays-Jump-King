@@ -7,6 +7,7 @@ import functools
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 
 GAME_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'game')
 PORT = 8000
@@ -42,10 +43,21 @@ def launch_server() -> threading.Thread:
 def launch_browser(headless: bool = False) -> webdriver.Chrome:
     options = Options()
     if headless:
-        options.add_argument("--headless")
+        options.add_argument("--headless=new")
+        # Required when running inside a container (root user, no sandbox, limited /dev/shm)
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        # Allow overriding the Chrome binary (e.g. /usr/bin/chromium on Debian/Modal)
+        chrome_bin = os.environ.get("CHROME_BIN")
+        if chrome_bin:
+            options.binary_location = chrome_bin
     options.add_argument("--mute-audio")
-    driver = webdriver.Chrome(options=options)
-    return driver
+
+    # Allow overriding the chromedriver path (e.g. /usr/bin/chromedriver on Debian/Modal)
+    chromedriver_bin = os.environ.get("CHROMEDRIVER_BIN")
+    service = Service(chromedriver_bin) if chromedriver_bin else None
+    return webdriver.Chrome(options=options, **({"service": service} if service else {}))
 
 
 def wait_for_game(driver: webdriver.Chrome, timeout: int = 5):
