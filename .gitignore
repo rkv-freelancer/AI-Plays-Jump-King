@@ -43,3 +43,6 @@ tensorboard_logs/
 # Secrets / local config
 .env
 *.local
+
+# WandDb
+wandb/

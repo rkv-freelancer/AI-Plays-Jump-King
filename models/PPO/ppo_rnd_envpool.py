@@ -1,19 +1,25 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo-rnd/#ppo_rnd_envpoolpy
 import os
+import sys
 import random
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from pathlib import Path
+import yaml
+
+# Ensure the project root is on sys.path so `environment` and `server` resolve
+# regardless of which directory VSCode / the terminal launches from.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 
 import gymnasium as gym
-from gymnasium.wrappers.normalize import RunningMeanStd
-
+from stable_baselines3.common.running_mean_std import RunningMeanStd
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
@@ -22,12 +28,13 @@ from environment.jump_king_env import JumpKingEnv
 
 # Server 
 from server.main import launch_server, launch_browser, wait_for_game, setup_game
+PORT = 8000
 
 # env.observation_space.shape[0]
 OBS_DIM   = 9   
 # RND embedding size
-EMBED_DIM = 64  
-
+EMBED_DIM = 64 
+ 
 @dataclass
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
@@ -121,6 +128,9 @@ class Args:
     num_iterations_obs_norm_init: int = 10
     """number of iterations to initialize the observations normalization parameters"""
 
+    save_interval: int = 50
+    """save a checkpoint every N policy updates"""
+
     # to be filled in runtime
     batch_size: int = 0
     """the batch size (computed in runtime)"""
@@ -130,6 +140,41 @@ class Args:
     
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
+
+
+def load_args(config_path: str = "configs/ppo_rnd.yml") -> Args:
+    """
+    Build an Args instance from a YAML config file.
+
+    How it works:
+      1. Start with the dataclass defaults (so any key absent from the YAML
+         falls back to the value defined in Args).
+      2. Open the YAML file and override only the keys that are present.
+      3. Skip the three runtime-computed fields — those are always set in __main__.
+
+    The config path is relative to the project root, so run the script from
+    the project root:  python models/PPO/ppo_rnd_envpool.py
+    """
+    # Runtime fields calculated in __main__ — never read from YAML
+    RUNTIME_FIELDS = {"batch_size", "minibatch_size", "num_iterations"}
+
+    args = Args()  # start with all dataclass defaults
+
+    if not os.path.exists(config_path):
+        print(f"[load_args] Config not found at '{config_path}', using dataclass defaults.")
+        return args
+
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f) or {}
+
+    for field in fields(args):
+        if field.name in RUNTIME_FIELDS:
+            continue  # always computed, never loaded from file
+        if field.name in cfg:
+            setattr(args, field.name, cfg[field.name])
+
+    print(f"[load_args] Loaded config from '{config_path}'")
+    return args
 
 
 # ALGO LOGIC: initialize agent here:
@@ -232,8 +277,7 @@ class RewardForwardFilter:
         return self.rewems
 
 if __name__ == "__main__":
-    # Use defaults directly
-    args = Args()
+    args = load_args("configs/ppo_rnd.yml")
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
@@ -264,9 +308,12 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     
     # TODO: Assumes `cuda` is installed
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+    # torch.backends.cudnn.deterministic = args.torch_deterministic
     # device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    
+    if args.torch_deterministic:
+        torch.use_deterministic_algorithms(True)
 
     # -- Setup Server --
     # 1. Start server first — driver.get() needs it running
@@ -297,20 +344,21 @@ if __name__ == "__main__":
         eps=1e-5,
     )
 
+    os.makedirs("checkpoints", exist_ok=True)
+
     reward_rms = RunningMeanStd()
     obs_rms = RunningMeanStd(shape=(OBS_DIM, ))
     discounted_reward = RewardForwardFilter(args.int_gamma)
 
     # ALGO Logic: Storage setup
-    obs = torch.zeros((args.num_steps, args.num_envs) + env.single_observation_space.shape).to(device)
-    actions = torch.zeros((args.num_steps, args.num_envs) + env.single_action_space.shape).to(device)
+    obs = torch.zeros((args.num_steps, args.num_envs) + env.observation_space.shape).to(device)
+    actions = torch.zeros((args.num_steps, args.num_envs) + env.action_space.shape).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     curiosity_rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     ext_values = torch.zeros((args.num_steps, args.num_envs)).to(device)
     int_values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    avg_returns = deque(maxlen=20)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -324,14 +372,18 @@ if __name__ == "__main__":
     print("Start to initialize observation normalization parameter.....")
     next_ob = []
     for step in range(args.num_steps * args.num_iterations_obs_norm_init):
-        acs = np.random.randint(0, env.single_action_space.n, size=(args.num_envs,))
-        s, r, d, _ = env.step(acs)
-        next_ob += s[:, 3, :, :].reshape([-1, 1, 84, 84]).tolist()
-
-        if len(next_ob) % (args.num_steps * args.num_envs) == 0:
-            next_ob = np.stack(next_ob)
-            obs_rms.update(next_ob)
+        # Single int
+        ac = env.action_space.sample()
+        s, r, terminated, truncated, _ = env.step(ac)
+        next_ob.append(s)
+        
+        if terminated or truncated:
+            env.reset()
+            
+        if len(next_ob) % args.num_steps == 0: 
+            obs_rms.update(np.array(next_ob))
             next_ob = []
+            
     print("End to initialize...")
 
     for update in range(1, num_updates + 1):
@@ -360,7 +412,7 @@ if __name__ == "__main__":
             logprobs[step] = logprob
 
             # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, reward, terminated, truncated, info = env.step(action.cpu().numpy())
+            next_obs, reward, terminated, truncated, info = env.step(action.item())            
             
             if terminated or truncated:
                 print(f"global_step={global_step}, return={info['episode']['r']:.2f}, length={info['episode']['l']}")
@@ -368,33 +420,23 @@ if __name__ == "__main__":
                 writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
             
             rewards[step] = torch.tensor(reward).to(device).view(-1)
-            next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
+            done = terminated or truncated
             
+            next_obs = torch.Tensor(next_obs).unsqueeze(0).to(device)  # (9,) → (1, 9)
+            next_done = torch.Tensor([done]).to(device)                 # scalar → (1,)
+            
+            # b_obs shape is (batch_size, OBS_DIM) = (512, 9) after flattening
             rnd_next_obs = (
                 (
-                    (next_obs[:, 3, :, :].reshape(args.num_envs, 1, 84, 84) - torch.from_numpy(obs_rms.mean).to(device))
-                    / torch.sqrt(torch.from_numpy(obs_rms.var).to(device))
+                    (b_obs - torch.from_numpy(obs_rms.mean).float().to(device))
+                    / torch.sqrt(torch.from_numpy(obs_rms.var).float().to(device))
                 ).clip(-5, 5)
             ).float()
+            
             target_next_feature = rnd_model.target(rnd_next_obs)
             predict_next_feature = rnd_model.predictor(rnd_next_obs)
             curiosity_rewards[step] = ((target_next_feature - predict_next_feature).pow(2).sum(1) / 2).data
-            for idx, d in enumerate(done):
-                if d and info["lives"][idx] == 0:
-                    avg_returns.append(info["r"][idx])
-                    epi_ret = np.average(avg_returns)
-                    print(
-                        f"global_step={global_step}, episodic_return={info['r'][idx]}, curiosity_reward={np.mean(curiosity_rewards[step].cpu().numpy())}"
-                    )
-                    writer.add_scalar("charts/avg_episodic_return", epi_ret, global_step)
-                    writer.add_scalar("charts/episodic_return", info["r"][idx], global_step)
-                    writer.add_scalar(
-                        "charts/episode_curiosity_reward",
-                        curiosity_rewards[step][idx],
-                        global_step,
-                    )
-                    writer.add_scalar("charts/episodic_length", info["l"][idx], global_step)
-
+                
         curiosity_reward_per_env = np.array(
             [discounted_reward.update(reward_per_step) for reward_per_step in curiosity_rewards.cpu().data.numpy().T]
         )
@@ -438,7 +480,7 @@ if __name__ == "__main__":
             int_returns = int_advantages + int_values
 
         # flatten the batch
-        b_obs = obs.reshape((-1,) + env.single_observation_space.shape)
+        b_obs = obs.reshape((-1,) + env.observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape(-1)
         b_ext_advantages = ext_advantages.reshape(-1)
@@ -449,17 +491,18 @@ if __name__ == "__main__":
 
         b_advantages = b_int_advantages * args.int_coef + b_ext_advantages * args.ext_coef
 
-        obs_rms.update(b_obs[:, 3, :, :].reshape(-1, 1, 84, 84).cpu().numpy())
+        obs_rms.update(b_obs.reshape(-1, OBS_DIM).cpu().numpy())
 
         # Optimizing the policy and value network
         b_inds = np.arange(args.batch_size)
 
+        # b_obs shape is (batch_size, OBS_DIM) = (512, 9) after flattening
         rnd_next_obs = (
-            (
-                (b_obs[:, 3, :, :].reshape(-1, 1, 84, 84) - torch.from_numpy(obs_rms.mean).to(device))
-                / torch.sqrt(torch.from_numpy(obs_rms.var).to(device))
-            ).clip(-5, 5)
-        ).float()
+                (
+                    (b_obs - torch.from_numpy(obs_rms.mean).float().to(device))
+                    / torch.sqrt(torch.from_numpy(obs_rms.var).float().to(device))
+                ).clip(-5, 5)
+            ).float()
 
         clipfracs = []
         for epoch in range(args.update_epochs):
@@ -475,6 +518,7 @@ if __name__ == "__main__":
 
                 mask = torch.rand(len(forward_loss), device=device)
                 mask = (mask < args.update_proportion).type(torch.FloatTensor).to(device)
+                
                 forward_loss = (forward_loss * mask).sum() / torch.max(
                     mask.sum(), torch.tensor([1], device=device, dtype=torch.float32)
                 )
@@ -547,5 +591,11 @@ if __name__ == "__main__":
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
+        if update % args.save_interval == 0:
+            torch.save(agent.state_dict(), f"checkpoints/agent_{global_step}.pt")
+            torch.save(agent.state_dict(), "checkpoints/agent_latest.pt")
+            print(f"[checkpoint] saved at step {global_step}")
+
+    torch.save(agent.state_dict(), "checkpoints/agent_final.pt")
     env.close()
     writer.close()

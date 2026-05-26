@@ -7,7 +7,7 @@ import os
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
-GAME_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'game')
+GAME_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'game')
 PORT = 8000
 
 # ------------------------------------------------------------------

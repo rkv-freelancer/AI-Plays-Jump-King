@@ -1,0 +1,46 @@
+# PPO + RND hyperparameters for Jump King
+# Edit this file to change experiment settings without touching algorithm code.
+# batch_size, minibatch_size, and num_iterations are computed at runtime — do not set here.
+
+# ── Experiment ────────────────────────────────────────────────────────────────
+seed: 42
+torch_deterministic: true
+
+# ── Hardware ──────────────────────────────────────────────────────────────────
+# Device auto-selects MPS on Apple Silicon; cuda flag reserved for Modal/GPU cloud
+cuda: true
+
+# ── Tracking ──────────────────────────────────────────────────────────────────
+track: true
+wandb_project_name: jump_king_ppo_rnd
+wandb_entity: null
+
+# ── Training loop ─────────────────────────────────────────────────────────────
+total_timesteps: 500000
+learning_rate: 1.0e-4
+num_envs: 1
+num_steps: 128
+anneal_lr: true
+
+# ── PPO ───────────────────────────────────────────────────────────────────────
+gamma: 0.999 # extrinsic reward discount
+gae_lambda: 0.95 # GAE smoothing
+num_minibatches: 4
+update_epochs: 4
+norm_adv: true
+clip_coef: 0.1 # policy ratio stays in [0.9, 1.1]
+clip_vloss: true
+ent_coef: 0.001 # entropy bonus weight
+vf_coef: 0.5 # value loss weight
+max_grad_norm: 0.5
+target_kl: null # set a float (e.g. 0.01) to enable early stopping
+
+# ── RND ───────────────────────────────────────────────────────────────────────
+update_proportion: 0.25 # fraction of mini-batch that trains the RND predictor
+int_coef: 1.0 # intrinsic advantage weight
+ext_coef: 2.0 # extrinsic advantage weight
+int_gamma: 0.99 # intrinsic reward discount
+num_iterations_obs_norm_init: 10 # random rollouts before training starts
+
+# ── Checkpointing ─────────────────────────────────────────────────────────────
+save_interval: 50 # save a checkpoint every N policy updates

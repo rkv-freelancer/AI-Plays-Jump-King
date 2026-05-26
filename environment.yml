@@ -23,3 +23,9 @@ dependencies:
       # PPO/RND training utilities (used when we build the training loop)
       - tensorboard
       - wandb
+
+      # YAML config loading
+      - pyyaml>=6.0
+
+      # RunningMeanStd and other RL utilities
+      - stable-baselines3>=2.0
