@@ -1,5 +1,7 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo-rnd/#ppo_rnd_envpoolpy
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"   # macOS: suppress duplicate libomp conflict
+
 import sys
 import random
 import time
@@ -11,7 +13,6 @@ import yaml
 # Ensure the project root is on sys.path so `environment` and `server` resolve
 # regardless of which directory VSCode / the terminal launches from.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
 
 import gymnasium as gym
 from stable_baselines3.common.running_mean_std import RunningMeanStd
@@ -34,6 +35,7 @@ PORT = 8000
 OBS_DIM   = 9   
 # RND embedding size
 EMBED_DIM = 64 
+MAX_FALL_PENALTY = -5.0   
  
 @dataclass
 class Args:
@@ -425,10 +427,10 @@ if __name__ == "__main__":
             next_obs = torch.Tensor(next_obs).unsqueeze(0).to(device)  # (9,) → (1, 9)
             next_done = torch.Tensor([done]).to(device)                 # scalar → (1,)
             
-            # b_obs shape is (batch_size, OBS_DIM) = (512, 9) after flattening
+            # next_obs is (1, 9) — normalise the single current step for RND
             rnd_next_obs = (
                 (
-                    (b_obs - torch.from_numpy(obs_rms.mean).float().to(device))
+                    (next_obs - torch.from_numpy(obs_rms.mean).float().to(device))
                     / torch.sqrt(torch.from_numpy(obs_rms.var).float().to(device))
                 ).clip(-5, 5)
             ).float()
