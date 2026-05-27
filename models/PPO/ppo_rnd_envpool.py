@@ -34,10 +34,11 @@ from server.main import launch_server, launch_browser, wait_for_game, setup_game
 # Constants
 PORT = 8000
 # env.observation_space.shape[0]
-OBS_DIM   = 9   
+OBS_DIM   = 9
 # RND embedding size
-EMBED_DIM = 64 
-MAX_FALL_PENALTY = -5.0   
+EMBED_DIM = 64
+# (MAX_FALL_PENALTY removed — PBRS in JumpKingEnv handles falls via telescoping;
+#  no asymmetric clip is needed any more.)
  
 @dataclass
 class Args:
@@ -344,7 +345,10 @@ if __name__ == "__main__":
     setup_game(driver)
     
     # -- Setup RL Environment --
-    env = JumpKingEnv(driver, frame_skip=4)
+    # IMPORTANT: pass args.gamma so the env's PBRS shaping uses the *same*
+    # discount factor as PPO's advantage estimation. If they disagree, the
+    # Ng-Harada-Russell invariance theorem stops applying.
+    env = JumpKingEnv(driver, frame_skip=4, gamma=args.gamma)
     env = gym.wrappers.RecordEpisodeStatistics(env)  
     assert isinstance(env.action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
