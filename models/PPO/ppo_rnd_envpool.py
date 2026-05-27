@@ -64,7 +64,7 @@ class Args:
     """the entity (team) of wandb's project"""
 
     # Algorithm specific arguments
-    total_timesteps: int = 2000000000
+    total_timesteps: int = 500000
     """total timesteps of the experiments"""
     
     learning_rate: float = 1e-4
@@ -123,7 +123,7 @@ class Args:
     int_coef: float = 1.0
     """coefficient of extrinsic reward"""
     
-    ext_coef: float = 2.0
+    ext_coef: float = 2.5
     """coefficient of intrinsic reward"""
     
     int_gamma: float = 0.99
@@ -247,11 +247,17 @@ class RNDModel(nn.Module):
             nn.ReLU(),
             layer_init(nn.Linear(256, 256)),
             nn.ReLU(),
+            layer_init(nn.Linear(256, 256)),
+            nn.ReLU(),
+            layer_init(nn.Linear(256, 256)),
+            nn.ReLU(),
             layer_init(nn.Linear(256, self.output_size)),
         )
 
         # Target network
         self.target = nn.Sequential(
+            layer_init(nn.Linear(self.input_size, 256)),
+            nn.ReLU(),
             layer_init(nn.Linear(self.input_size, 256)),
             nn.ReLU(),
             layer_init(nn.Linear(256, self.output_size)),
@@ -373,9 +379,18 @@ if __name__ == "__main__":
     start_time = time.time()
     next_obs_np, _ = env.reset()
     # add num_envs dim → (1, 9)
-    next_obs = torch.Tensor(next_obs_np).unsqueeze(0).to(device)  
+    next_obs = torch.Tensor(next_obs_np).unsqueeze(0).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
     num_updates = args.total_timesteps // args.batch_size
+
+    # ── Per-episode diagnostic trackers ──────────────────────────────────────
+    # ep_max_level   : highest level the agent reached this episode (progress, not oscillation)
+    # ep_jump_fires  : count of (jump-action → non-jump-action) transitions = real jump releases
+    # prev_was_jump  : whether the *previous* action was a jump-charge (idx 3, 4, 5)
+    JUMP_ACTIONS  = {3, 4, 5}
+    ep_max_level  = 0
+    ep_jump_fires = 0
+    prev_was_jump = False
 
     print("Start to initialize observation normalization parameter.....")
     next_ob = []
@@ -419,14 +434,37 @@ if __name__ == "__main__":
             actions[step] = action
             logprobs[step] = logprob
 
+            # ── Jump-fire detection (transition: jump-charge → release) ──────
+            # A jump-charge action (3, 4, 5) sets jumpHeld=True in the browser.
+            # The actual jump fires the moment we switch back to a non-jump
+            # action (0, 1, 2) — that is when _apply_action() calls player.Jump().
+            # Counting these transitions confirms whether the agent ever even
+            # *attempts* the hold→release sequence the game requires.
+            act_int      = int(action.item())
+            curr_is_jump = act_int in JUMP_ACTIONS
+            if prev_was_jump and not curr_is_jump:
+                ep_jump_fires += 1
+            prev_was_jump = curr_is_jump
+
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminated, truncated, info = env.step(action.item())
             done = terminated or truncated
 
+            # Track the highest level reached this episode — distinguishes
+            # genuine progress from up-down oscillation on a single platform.
+            ep_max_level = max(ep_max_level, int(info["state"]["level"]))
+
             if done:
                 print(f"global_step={global_step}, return={info['episode']['r']:.2f}, length={info['episode']['l']}")
-                writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                writer.add_scalar("charts/episodic_return",     info["episode"]["r"], global_step)
+                writer.add_scalar("charts/episodic_length",     info["episode"]["l"], global_step)
+                writer.add_scalar("charts/episodic_max_level",  ep_max_level,         global_step)
+                writer.add_scalar("charts/episodic_jump_fires", ep_jump_fires,        global_step)
+                writer.add_scalar("charts/episodic_success",    float(info.get("success", False)), global_step)
+                # Reset trackers for the next episode
+                ep_max_level  = 0
+                ep_jump_fires = 0
+                prev_was_jump = False
                 # Reset env so the NEXT rollout step starts from a fresh state.
                 # Without this, the env keeps stepping from the terminal state
                 # and one "episode" spans the whole training run.
@@ -458,6 +496,10 @@ if __name__ == "__main__":
             len(curiosity_reward_per_env),
         )
         reward_rms.update_from_moments(mean, std**2, count)
+
+        # Capture RAW intrinsic mean before in-place normalization, so we can
+        # compare it apples-to-apples against the (un-normalized) extrinsic stream.
+        raw_curiosity_mean = curiosity_rewards.mean().item()
 
         curiosity_rewards /= np.sqrt(reward_rms.var)
 
@@ -602,6 +644,28 @@ if __name__ == "__main__":
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+
+        # ── Reward-scale asymmetry diagnostic ────────────────────────────────
+        # rewards            : raw extrinsic (height_gain - 0.01, never normalized)
+        # raw_curiosity_mean : intrinsic BEFORE divide-by-std (true RND novelty scale)
+        # curiosity_rewards  : intrinsic AFTER divide-by-std (what actually feeds GAE)
+        # When ext is ±hundreds and int is ~unit, `ext_coef` vs `int_coef` are
+        # not really comparable — these scalars confirm the gap.
+        writer.add_scalar("charts/extrinsic_reward_mean",    rewards.mean().item(),           global_step)
+        writer.add_scalar("charts/intrinsic_reward_mean_raw", raw_curiosity_mean,             global_step)
+        writer.add_scalar("charts/intrinsic_reward_mean_norm", curiosity_rewards.mean().item(), global_step)
+
+        # ── Per-action frequency over this rollout ───────────────────────────
+        # Directly diagnoses the "agent only walks right" failure mode: if
+        # action 2 (walk right) dominates, you can see it here in one glance.
+        flat_actions  = actions.cpu().numpy().astype(int).flatten()
+        action_counts = np.bincount(flat_actions, minlength=env.action_space.n)
+        action_freqs  = action_counts / max(len(flat_actions), 1)
+        action_names  = ["idle", "left", "right", "jump_neutral", "jump_left", "jump_right"]
+        for i, (name, freq) in enumerate(zip(action_names, action_freqs)):
+            writer.add_scalar(f"actions/freq_{i}_{name}", freq, global_step)
+        # Full histogram view (W&B will render it as a bar chart over time)
+        writer.add_histogram("actions/distribution", flat_actions, global_step, bins=env.action_space.n)
 
         if update % args.save_interval == 0:
             torch.save(agent.state_dict(), f"checkpoints/agent_{global_step}.pt")
