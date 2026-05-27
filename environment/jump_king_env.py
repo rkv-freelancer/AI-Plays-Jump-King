@@ -21,8 +21,14 @@ FINAL_LEVEL       = 42      # 0-indexed last level
 PRINCESS_X_MIN    = 900     # princess is on the right portion of the platform
 PRINCESS_Y_MAX    = 340     # player y ≤ this when standing on (or near) the platform
 SUCCESS_REWARD    = 10.0    # one-time bonus when episode ends with success
-MAX_FALL_PENALTY  = -5.0    # floor on height-loss penalty per step
+STEP_PENALTY      = -0.01   # constant per-step base-MDP cost → encourages speed
 MAX_EPISODE_STEPS = 2000    # hard time-limit; episode is truncated after this
+
+# Default discount factor for PBRS shaping. MUST match PPO's args.gamma — if
+# they disagree, the Ng-Harada-Russell invariance theorem no longer applies
+# and a new exploit can re-emerge. JumpKingEnv accepts gamma as a constructor
+# argument; pass args.gamma explicitly from the training loop.
+DEFAULT_GAMMA     = 0.999
 
 
 class JumpKingEnv(gym.Env):
@@ -47,10 +53,22 @@ class JumpKingEnv(gym.Env):
                       OR the player falls off the bottom of level 0 (playersDead).
         truncated   – episode reaches MAX_EPISODE_STEPS without termination.
 
-    Reward:
-        +height_gain  (positive = climbed, capped at MAX_FALL_PENALTY on big falls)
-        -0.01         (small per-step penalty to encourage speed)
-        +SUCCESS_REWARD  (one-time bonus on successful termination)
+    Reward (Potential-Based Reward Shaping; Ng, Harada, Russell 1999):
+
+        Per-step reward = F(s, a, s') + base R(s, a, s')
+
+        Shaping term  F = γ·Φ(s') − Φ(s)   with Φ(s) = global_height(s)
+                        = height_gain − (1 − γ)·h(s')
+                      → telescopes over any trajectory to γ^T·h(s_T) − h(s_0),
+                        so the climb-fall oscillation exploit cancels out and
+                        no asymmetric clip (MAX_FALL_PENALTY) is needed.
+
+        Base term  R   = STEP_PENALTY           every step (time pressure)
+                       + SUCCESS_REWARD          on princess-zone termination
+
+        Critical: do NOT also add height_gain, a princess-distance bonus, or
+        any other non-PBRS dense reward on top — combining two shaping sources
+        breaks the invariance theorem and re-opens reward hacking.
 
     Jump fires automatically when the agent switches away from a jump action —
     mirroring how the real game works (hold space to charge, release to jump).
@@ -58,10 +76,13 @@ class JumpKingEnv(gym.Env):
 
     metadata = {"render_modes": []}
 
-    def __init__(self, driver, frame_skip=4):
+    def __init__(self, driver, frame_skip=4, gamma: float = DEFAULT_GAMMA):
         super().__init__()
         self.driver     = driver
         self.frame_skip = frame_skip
+        # γ for the PBRS shaping term. MUST match the discount factor used by
+        # the learner (PPO's args.gamma) — otherwise invariance is broken.
+        self.gamma      = float(gamma)
 
         self._prev_height     = 0.0
         self._prev_jump_held  = False
@@ -176,30 +197,39 @@ class JumpKingEnv(gym.Env):
         obs   = self._to_obs(state)
 
         # ── Reward ────────────────────────────────────────────────────────────
-        height_gain       = state["global_height"] - self._prev_height
-        self._prev_height = state["global_height"]
+        # Potential-Based Reward Shaping with Φ(s) = global_height(s):
+        #
+        #     F(s, a, s') = γ · Φ(s') − Φ(s)
+        #                 = γ · h(s') − h(s)
+        #                 ≡ height_gain − (1 − γ) · h(s')
+        #
+        # The (1 − γ)·h(s') correction is what makes the climb-fall oscillation
+        # exploit telescope to ≈ 0 over a closed loop — no clip needed.
+        h_prev            = self._prev_height
+        h_curr            = float(state["global_height"])
+        self._prev_height = h_curr
 
-        # Clip large falls so a single bad drop doesn't dominate the return
-        # TODO: Stabilize at [-1, 1] for gradient updates on PPO
-        clipped_gain = max(float(height_gain), MAX_FALL_PENALTY)
-        reward       = clipped_gain - 0.01   # step penalty to encourage speed
+        shaping_reward = self.gamma * h_curr - h_prev          # F(s, a, s')
+        base_reward    = STEP_PENALTY                           # base R: time pressure
 
         # ── Termination ───────────────────────────────────────────────────────
         success    = self._is_at_princess(state)
-        
-        # TODO: 
         fell_out   = bool(state["is_dead"])    # fell off bottom of level 0
         terminated = success or fell_out
 
         if success:
-            reward += SUCCESS_REWARD   # one-time bonus for reaching the princess
+            base_reward += SUCCESS_REWARD   # sparse terminal bonus — part of base R
+
+        reward = base_reward + shaping_reward
 
         # ── Truncation ────────────────────────────────────────────────────────
         truncated = (self._step_count >= MAX_EPISODE_STEPS)
 
         return obs, reward, terminated, truncated, {
-            "state":   state, 
-            "success": success,
+            "state":          state,
+            "success":        success,
+            "shaping_reward": shaping_reward,   # exposed for diagnostics / W&B
+            "base_reward":    base_reward,
         }
 
     def render(self):
