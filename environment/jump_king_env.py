@@ -180,6 +180,7 @@ class JumpKingEnv(gym.Env):
         self._prev_height = state["global_height"]
 
         # Clip large falls so a single bad drop doesn't dominate the return
+        # TODO: Stabilize at [-1, 1] for gradient updates on PPO
         clipped_gain = max(float(height_gain), MAX_FALL_PENALTY)
         reward       = clipped_gain - 0.01   # step penalty to encourage speed
 
@@ -196,7 +197,6 @@ class JumpKingEnv(gym.Env):
         # ── Truncation ────────────────────────────────────────────────────────
         truncated = (self._step_count >= MAX_EPISODE_STEPS)
 
-        # TODO: Current model does not involve the `truncated` status
         return obs, reward, terminated, truncated, {
             "state":   state, 
             "success": success,
