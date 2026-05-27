@@ -23,24 +23,44 @@ num_steps: 128
 anneal_lr: true
 
 # ── PPO ───────────────────────────────────────────────────────────────────────
-gamma: 0.999 # extrinsic reward discount
-gae_lambda: 0.95 # GAE smoothing
+# extrinsic reward discount
+gamma: 0.999
+
+# GAE smoothing
+gae_lambda: 0.95
+
 num_minibatches: 4
 update_epochs: 4
 norm_adv: true
-clip_coef: 0.1 # policy ratio stays in [0.9, 1.1]
+
+# policy ratio stays in [0.9, 1.1]
+clip_coef: 0.1
+
 clip_vloss: true
-ent_coef: 0.001 # entropy bonus weight
-vf_coef: 0.5 # value loss weight
+
+# entropy bonus weight
+ent_coef: 0.001
+
+# value loss weight
+vf_coef: 0.5
+
 max_grad_norm: 0.5
-target_kl: null # set a float (e.g. 0.01) to enable early stopping
+
+# set a float (e.g. 0.01) to enable early stopping
+target_kl: null
 
 # ── RND ───────────────────────────────────────────────────────────────────────
-update_proportion: 0.25 # fraction of mini-batch that trains the RND predictor
-int_coef: 1.0 # intrinsic advantage weight
-ext_coef: 2.0 # extrinsic advantage weight
-int_gamma: 0.99 # intrinsic reward discount
-num_iterations_obs_norm_init: 10 # random rollouts before training starts
+# fraction of mini-batch that trains the RND predictor
+update_proportion: 0.25
+# intrinsic advantage weight
+int_coef: 1.0
+# extrinsic advantage weight
+ext_coef: 2.0
+# intrinsic reward discount
+int_gamma: 0.99
+# random rollouts before training starts
+num_iterations_obs_norm_init: 10
 
 # ── Checkpointing ─────────────────────────────────────────────────────────────
-save_interval: 50 # save a checkpoint every N policy updates
+# save a checkpoint every N policy updates
+save_interval: 50
