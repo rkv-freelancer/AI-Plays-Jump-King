@@ -41,6 +41,10 @@ training_image = (
         "tensorboard",
         "wandb",
         "numpy",
+        # Video recording: PIL decodes canvas PNGs, imageio + ffmpeg write mp4
+        "Pillow",
+        "imageio",
+        "imageio-ffmpeg",
     )
     # Attach project source — added at container startup, no layer rebuild needed
     # when these change.  Put add_local_dir LAST per Modal docs (no further build
@@ -62,7 +66,7 @@ checkpoints_vol = modal.Volume.from_name(
 @app.function(
     image=training_image,
     gpu="T4",              # ~$1.10/hr — swap to "T4" to save cost
-    timeout=3600 * 8,        # 8-hour hard cap
+    timeout=3600 * 10,        # 10-hour hard cap
     volumes={"/root/project/checkpoints": checkpoints_vol},
     secrets=[
         modal.Secret.from_dict({
@@ -91,7 +95,8 @@ def train():
 # ── Local entrypoint ──────────────────────────────────────────────────────────
 @app.local_entrypoint()
 def main():
-    print("Submitting training job to Modal (GPU: A10G)...")
+    # Change GPU 
+    print("Submitting training job to Modal (GPU: T4)...")
     train.remote()
     print(
         "Done.\n"

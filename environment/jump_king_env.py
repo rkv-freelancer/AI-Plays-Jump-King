@@ -1,6 +1,10 @@
+import base64
+import io
+
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
+from PIL import Image
 
 # Maps discrete action index → which input flags to hold for that step
 ACTION_MAP = {
@@ -74,7 +78,7 @@ class JumpKingEnv(gym.Env):
     mirroring how the real game works (hold space to charge, release to jump).
     """
 
-    metadata = {"render_modes": []}
+    metadata = {"render_modes": ["rgb_array"], "render_fps": 30}
 
     def __init__(self, driver, frame_skip=4, gamma: float = DEFAULT_GAMMA):
         super().__init__()
@@ -233,10 +237,28 @@ class JumpKingEnv(gym.Env):
         }
 
     def render(self):
-        # Trigger one p5.js draw() call to update the canvas.
-        # Required because noLoop() pauses the draw loop — physics advances
-        # via player.Update() but the display only updates when redraw() is called.
+        """
+        Returns a HxWx3 uint8 numpy array of the current canvas content.
+
+        Uses canvas.toDataURL() (base64 PNG) rather than driver.get_screenshot_as_png()
+        because:
+          • toDataURL returns *just the canvas* — no browser chrome to crop out
+          • it's ~5× faster than a full Selenium screenshot in headless Chrome
+          • it works identically in headless and headed modes
+
+        We trigger redraw() first because noLoop() pauses the p5.js draw loop —
+        physics advances via player.Update() but the canvas pixels only refresh
+        when redraw() is explicitly called.
+        """
         self.driver.execute_script("redraw()")
+        data_url = self.driver.execute_script(
+            "return document.querySelector('canvas').toDataURL('image/png');"
+        )
+        # Strip the "data:image/png;base64," prefix (always 22 chars for PNG)
+        png_b64  = data_url.split(",", 1)[1]
+        png_bytes = base64.b64decode(png_b64)
+        frame    = np.array(Image.open(io.BytesIO(png_bytes)).convert("RGB"))
+        return frame
 
     def close(self):
         self.driver.quit()

@@ -2,6 +2,10 @@
 # Edit this file to change experiment settings without touching algorithm code.
 # batch_size, minibatch_size, and num_iterations are computed at runtime — do not set here.
 
+# Calculations:
+# batch_size = num_envs × num_steps
+# num_updates = total_timesteps ÷ batch_size
+
 # ── Experiment ────────────────────────────────────────────────────────────────
 seed: 42
 torch_deterministic: true
@@ -16,7 +20,7 @@ wandb_project_name: jump_king_ppo_rnd
 wandb_entity: null
 
 # ── Training loop ─────────────────────────────────────────────────────────────
-total_timesteps: 500000
+total_timesteps: 100000
 learning_rate: 1.0e-4
 num_envs: 1
 num_steps: 128
@@ -64,3 +68,10 @@ num_iterations_obs_norm_init: 10
 # ── Checkpointing ─────────────────────────────────────────────────────────────
 # save a checkpoint every N policy updates
 save_interval: 50
+
+# ── Video ─────────────────────────────────────────────────────────────
+# videos_upload = num_updates ÷ video_record_interval
+# video_duration = (frames captured) ÷ video_fps
+video_record_interval: 25
+
+capture_video: true

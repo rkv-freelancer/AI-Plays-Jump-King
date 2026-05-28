@@ -5,16 +5,21 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"   # macOS: suppress duplicate libomp
 import sys
 import random
 import time
+import logging
 from collections import deque
 from dataclasses import dataclass, fields
 from pathlib import Path
 import yaml
+
+# Video recording (imageio + ffmpeg) is lazy-imported inside the rollout loop so
+# that runs with capture_video=False have zero extra dependency footprint.
 
 # Ensure the project root is on sys.path so `environment` and `server` resolve
 # regardless of which directory VSCode / the terminal launches from.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import gymnasium as gym
+
 from stable_baselines3.common.running_mean_std import RunningMeanStd
 import numpy as np
 import torch
@@ -75,7 +80,7 @@ class Args:
     """the number of parallel game environments"""
     
     num_steps: int = 512
-    """the number of steps to run in each environment per policy rollout"""
+    """the number of steps to runb in each environment per policy rollout"""
     
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -135,6 +140,26 @@ class Args:
 
     save_interval: int = 50
     """save a checkpoint every N policy updates"""
+
+    # ── Video recording ──────────────────────────────────────────────────────
+    capture_video: bool = False
+    """if toggled, periodically record one episode and upload to W&B"""
+
+    video_record_interval: int = 25
+    """record a video every N policy updates (25 updates ≈ 12,800 steps ≈ 4 min @ 56 SPS).
+       Trade-off: lower = denser feedback but more wall-clock overhead. The recorded
+       segment is at most one full episode (≤ MAX_EPISODE_STEPS frames ≈ 66 s @ 30 fps)."""
+
+    video_folder: str = "models/PPO/video"
+    """local staging directory for mp4 files (deleted after W&B upload)"""
+
+    video_fps: int = 30
+    """playback fps for the saved mp4 (game runs at 4 sim-frames per env.step,
+       so 30 fps ≈ real-time visual playback when frame_skip=4)"""
+
+    # ── Logging ──────────────────────────────────────────────────────────────
+    log_level: str = "INFO"
+    """Python logging level: DEBUG / INFO / WARNING / ERROR"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -255,11 +280,14 @@ class RNDModel(nn.Module):
             layer_init(nn.Linear(256, self.output_size)),
         )
 
-        # Target network
+        # Target network — frozen random projection.
+        # Shape chain: input_size → 256 → 256 → output_size
+        # (Was 9→256→[Linear(9,256)] which is impossible — typo: the second
+        #  hidden layer must be 256→256, not input_size→256.)
         self.target = nn.Sequential(
             layer_init(nn.Linear(self.input_size, 256)),
             nn.ReLU(),
-            layer_init(nn.Linear(self.input_size, 256)),
+            layer_init(nn.Linear(256, 256)),
             nn.ReLU(),
             layer_init(nn.Linear(256, self.output_size)),
         )
@@ -292,7 +320,21 @@ if __name__ == "__main__":
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-    
+
+    # ── Structured logger ────────────────────────────────────────────────────
+    # Replaces ad-hoc print() calls. Format includes timestamp + level + msg,
+    # so log lines stream into Modal's container logs with a uniform shape and
+    # are greppable. The logger is configured once at module level and used
+    # throughout the rollout / update loop.
+    logging.basicConfig(
+        level   = getattr(logging, args.log_level.upper(), logging.INFO),
+        format  = "[%(asctime)s] [%(levelname)s] %(message)s",
+        datefmt = "%H:%M:%S",
+        stream  = sys.stdout,
+    )
+    log = logging.getLogger("ppo_rnd")
+    log.info("Args: %s", {k: v for k, v in vars(args).items() if not k.startswith("_")})
+
     run_name = f"JumpKing__{args.exp_name}__{args.seed}__{int(time.time())}"
     
     if args.track:
@@ -349,8 +391,14 @@ if __name__ == "__main__":
     # discount factor as PPO's advantage estimation. If they disagree, the
     # Ng-Harada-Russell invariance theorem stops applying.
     env = JumpKingEnv(driver, frame_skip=4, gamma=args.gamma)
-    env = gym.wrappers.RecordEpisodeStatistics(env)  
+    env = gym.wrappers.RecordEpisodeStatistics(env)
     assert isinstance(env.action_space, gym.spaces.Discrete), "only discrete action space is supported"
+
+    # (gym.wrappers.RecordVideo deliberately NOT used here — it triggers on
+    #  episode index and writes only to disk. We want trigger-on-update +
+    #  direct W&B upload + no persistent local files. See video logic below.)
+    if args.capture_video:
+        os.makedirs(args.video_folder, exist_ok=True)
 
     agent = Agent(env.action_space.n).to(device)
     rnd_model = RNDModel(OBS_DIM, EMBED_DIM).to(device)
@@ -391,12 +439,23 @@ if __name__ == "__main__":
     # ep_max_level   : highest level the agent reached this episode (progress, not oscillation)
     # ep_jump_fires  : count of (jump-action → non-jump-action) transitions = real jump releases
     # prev_was_jump  : whether the *previous* action was a jump-charge (idx 3, 4, 5)
-    JUMP_ACTIONS  = {3, 4, 5}
-    ep_max_level  = 0
-    ep_jump_fires = 0
-    prev_was_jump = False
+    # total_episodes : running count of completed episodes across the whole run
+    JUMP_ACTIONS   = {3, 4, 5}
+    ep_max_level   = 0
+    ep_jump_fires  = 0
+    prev_was_jump  = False
+    total_episodes = 0
 
-    print("Start to initialize observation normalization parameter.....")
+    # ── Video recording state ────────────────────────────────────────────────
+    # recording_active : True for the duration of one trigger rollout
+    # video_frames     : rgb_array frames captured during that rollout
+    # video_started_ep : the episode-index this recording started in, so we can
+    #                    stop cleanly when that episode finishes (one episode per file)
+    recording_active = False
+    video_frames     = []
+    video_started_ep = -1
+
+    log.info("Start to initialize observation normalization parameter.....")
     next_ob = []
     for step in range(args.num_steps * args.num_iterations_obs_norm_init):
         # Single int
@@ -411,7 +470,7 @@ if __name__ == "__main__":
             obs_rms.update(np.array(next_ob))
             next_ob = []
             
-    print("End to initialize...")
+    log.info("End to initialize...")
 
     for update in range(1, num_updates + 1):
         # Annealing the rate if instructed to do so.
@@ -419,6 +478,15 @@ if __name__ == "__main__":
             frac = 1.0 - (update - 1.0) / num_updates
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
+
+        # ── Trigger video recording for this rollout? ────────────────────────
+        # Records frames during the next rollout; saves & uploads once one
+        # full episode has been captured (or rollout ends with non-empty buf).
+        if args.capture_video and (update % args.video_record_interval == 0):
+            recording_active = True
+            video_frames     = []
+            video_started_ep = total_episodes
+            log.info("[video] arming recorder for update %d (target ep #%d)", update, total_episodes)
 
         for step in range(0, args.num_steps):
             global_step += 1 * args.num_envs
@@ -458,17 +526,38 @@ if __name__ == "__main__":
             # genuine progress from up-down oscillation on a single platform.
             ep_max_level = max(ep_max_level, int(info["state"]["level"]))
 
+            # ── Frame capture (only while recorder is armed) ─────────────────
+            # env.render() returns an (H, W, 3) uint8 rgb_array of the canvas.
+            # We stop appending the moment one full episode finishes so the
+            # mp4 contains exactly one episode (cleanest for visual review).
+            if recording_active:
+                video_frames.append(env.render())
+
             if done:
-                print(f"global_step={global_step}, return={info['episode']['r']:.2f}, length={info['episode']['l']}")
+                total_episodes += 1
+                log.info(
+                    "[episode #%d] step=%d return=%.2f length=%d max_level=%d jump_fires=%d success=%s",
+                    total_episodes, global_step,
+                    info["episode"]["r"], info["episode"]["l"],
+                    ep_max_level, ep_jump_fires,
+                    bool(info.get("success", False)),
+                )
                 writer.add_scalar("charts/episodic_return",     info["episode"]["r"], global_step)
                 writer.add_scalar("charts/episodic_length",     info["episode"]["l"], global_step)
                 writer.add_scalar("charts/episodic_max_level",  ep_max_level,         global_step)
                 writer.add_scalar("charts/episodic_jump_fires", ep_jump_fires,        global_step)
                 writer.add_scalar("charts/episodic_success",    float(info.get("success", False)), global_step)
+                writer.add_scalar("charts/total_episodes",      total_episodes,       global_step)
+
+                # If we just captured a full episode, disarm the recorder.
+                if recording_active and total_episodes > video_started_ep:
+                    recording_active = False   # stop capturing for the rest of the rollout
+
                 # Reset trackers for the next episode
                 ep_max_level  = 0
                 ep_jump_fires = 0
                 prev_was_jump = False
+
                 # Reset env so the NEXT rollout step starts from a fresh state.
                 # Without this, the env keeps stepping from the terminal state
                 # and one "episode" spans the whole training run.
@@ -639,6 +728,7 @@ if __name__ == "__main__":
                     break
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
+        sps = int(global_step / (time.time() - start_time))
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
@@ -646,8 +736,18 @@ if __name__ == "__main__":
         writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
         writer.add_scalar("losses/fwd_loss", forward_loss.item(), global_step)
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
-        print("SPS:", int(global_step / (time.time() - start_time)))
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        writer.add_scalar("charts/SPS", sps, global_step)
+
+        # ── Structured per-update debug log ──────────────────────────────────
+        # Single one-liner with everything you'd want to eyeball per update.
+        log.info(
+            "[update %d/%d] step=%d ep=%d sps=%d  "
+            "lr=%.2e pg=%.4f v=%.4f ent=%.4f kl=%.4f fwd=%.4f",
+            update, num_updates, global_step, total_episodes, sps,
+            optimizer.param_groups[0]["lr"],
+            pg_loss.item(), v_loss.item(), entropy_loss.item(),
+            approx_kl.item(), forward_loss.item(),
+        )
 
         # ── Reward-scale asymmetry diagnostic ────────────────────────────────
         # rewards            : raw extrinsic (height_gain - 0.01, never normalized)
@@ -674,8 +774,42 @@ if __name__ == "__main__":
         if update % args.save_interval == 0:
             torch.save(agent.state_dict(), f"checkpoints/agent_{global_step}.pt")
             torch.save(agent.state_dict(), "checkpoints/agent_latest.pt")
-            print(f"[checkpoint] saved at step {global_step}")
+            log.info("[checkpoint] saved at step %d", global_step)
+
+        # ── Video flush: write mp4, upload to W&B, delete local copy ─────────
+        # Triggered when we accumulated frames during this rollout AND the
+        # recorder has since been disarmed (i.e. we captured a complete episode).
+        # Also flushes if the rollout ended while still recording (partial ep).
+        if args.capture_video and len(video_frames) > 0 and (not recording_active or step == args.num_steps - 1):
+            try:
+                import imageio
+                video_path = os.path.join(
+                    args.video_folder, f"update_{update:06d}_step_{global_step}.mp4"
+                )
+                imageio.mimsave(video_path, video_frames, fps=args.video_fps, macro_block_size=1)
+                log.info("[video] wrote %d frames → %s (%.1f s @ %d fps)",
+                         len(video_frames), video_path,
+                         len(video_frames) / args.video_fps, args.video_fps)
+                if args.track:
+                    import wandb
+                    wandb.log(
+                        {"video/training": wandb.Video(video_path, fps=args.video_fps, format="mp4")},
+                        step=global_step,
+                    )
+                    log.info("[video] uploaded to W&B at step %d", global_step)
+                # Delete local copy — W&B has already absorbed it into its media dir
+                try:
+                    os.remove(video_path)
+                except OSError as e:
+                    log.warning("[video] could not delete local file %s: %s", video_path, e)
+            except Exception as e:
+                log.exception("[video] recording failed: %s", e)
+            finally:
+                video_frames     = []
+                recording_active = False
 
     torch.save(agent.state_dict(), "checkpoints/agent_final.pt")
+    log.info("[checkpoint] final model saved; %d episodes completed across %d steps",
+             total_episodes, global_step)
     env.close()
     writer.close()
