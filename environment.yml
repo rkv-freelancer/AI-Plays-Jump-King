@@ -29,3 +29,6 @@ dependencies:
 
       # RunningMeanStd and other RL utilities
       - stable-baselines3>=2.0
+
+      # Testing — fast iteration via `python tests/main.py`
+      - pytest>=8.0
