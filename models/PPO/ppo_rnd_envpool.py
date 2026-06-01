@@ -56,7 +56,6 @@ class Args:
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     
-    # TODO: Run on `Modal` GPU cloud
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
     
@@ -85,7 +84,7 @@ class Args:
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
     
-    gamma: float = 0.999
+    gamma: float = 0.99
     """the discount factor gamma"""
     
     gae_lambda: float = 0.95
@@ -119,6 +118,9 @@ class Args:
     
     target_kl: float = None
     """the target KL divergence threshold"""
+    
+    num_agents: int = 64
+    """number of agents trained for each rollout"""
 
     # RND arguments
     # Only 25% of the mini-batch randomly updates the RND predictor each pass. Prevents the predictor from memorising the training distribution too quickly.
