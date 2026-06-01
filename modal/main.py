@@ -45,6 +45,8 @@ training_image = (
         "Pillow",
         "imageio",
         "imageio-ffmpeg",
+        # Testing — lets us run `python tests/main.py` inside the container
+        "pytest>=8.0",
     )
     # Attach project source — added at container startup, no layer rebuild needed
     # when these change.  Put add_local_dir LAST per Modal docs (no further build
@@ -54,6 +56,7 @@ training_image = (
     .add_local_dir(str(PROJECT_ROOT / "server"),      remote_path="/root/project/server")
     .add_local_dir(str(PROJECT_ROOT / "models"),      remote_path="/root/project/models")
     .add_local_dir(str(PROJECT_ROOT / "configs"),     remote_path="/root/project/configs")
+    .add_local_dir(str(PROJECT_ROOT / "tests"),       remote_path="/root/project/tests")
 )
 
 # ── Persistent volume for checkpoints ────────────────────────────────────────

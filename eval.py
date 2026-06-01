@@ -31,6 +31,7 @@ from server.main import launch_server, launch_browser, wait_for_game, setup_eval
 from models.PPO.ppo_rnd_envpool import Agent
 
 PORT = 8000
+MAX_EPISODE_STEPS = 2000
 
 ACTION_NAMES = ["idle", "walk_left", "walk_right", "jump_neutral", "jump_left", "jump_right"]
 
@@ -86,7 +87,7 @@ def run_episode(env, agent, device, greedy: bool = False):
         # Eval bypasses env.step(), so check termination / success directly.
         success    = env._is_at_princess(state)
         terminated = bool(state.get("is_dead", False)) or success
-        truncated  = steps >= 2000   # mirrors MAX_EPISODE_STEPS in the env
+        truncated  = steps >= MAX_EPISODE_STEPS   # mirrors MAX_EPISODE_STEPS in the env
 
         if success:
             print("  *** PRINCESS REACHED! ***")
