@@ -320,7 +320,9 @@ class JumpKingEnv_Multi(gym.Env):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-        
+    
+    # TODO! 
+    # ValueError: cannot reshape array of size 6000 into shape (4,10)
     def _get_raw_state_all(self) -> np.ndarray:
         
         flat = self.driver.execute_script(
@@ -330,19 +332,19 @@ class JumpKingEnv_Multi(gym.Env):
                 const player = population.players [idx]; 
                 const o = idx * 10; 
                 
-                out[o + 0] = player.currentPos.x, 
-                out[o + 1] = player.currentPos.y, 
-                out[o + 2] = player.currentSpeed.x,
-                out[o + 3] = player.currentSpeed.y,
-                out[o + 4] = player.isOnGround,
-                out[o + 5] = player.jumpTimer,
-                out[o + 6] = player.facingRight,
-                out[o + 7] = player.currentLevelNo,
-                out[o + 8] = player.GetGlobalHeight(),
-                out[o + 9] = player.playersDead
+                out[o + 0] = player.currentPos.x;
+                out[o + 1] = player.currentPos.y; 
+                out[o + 2] = player.currentSpeed.x;
+                out[o + 3] = player.currentSpeed.y;
+                out[o + 4] = player.isOnGround;
+                out[o + 5] = player.jumpTimer;
+                out[o + 6] = player.facingRight;
+                out[o + 7] = player.currentLevelNo;
+                out[o + 8] = player.GetGlobalHeight();
+                out[o + 9] = player.playersDead;
             }
             
-            return Array.from(out)
+            return Array.from(out);
             """
         )
         
