@@ -321,15 +321,14 @@ class JumpKingEnv_Multi(gym.Env):
     # Internal helpers
     # ------------------------------------------------------------------
     
-    # TODO! 
-    # ValueError: cannot reshape array of size 6000 into shape (4,10)
+    
     def _get_raw_state_all(self) -> np.ndarray:
         
         flat = self.driver.execute_script(
             """
-            const out = new Float32Array(population.players.length * 10);
-            for (let idx = 0; idx < population.players.length; idx++) {
-                const player = population.players [idx]; 
+            const out = new Float32Array(window.population.players.length * 10);
+            for (let idx = 0; idx < window.population.players.length; idx++) {
+                const player = window.population.players [idx]; 
                 const o = idx * 10; 
                 
                 out[o + 0] = player.currentPos.x;
@@ -415,7 +414,7 @@ class JumpKingEnv_Multi(gym.Env):
         
         self.driver.execute_script(
         """
-        const players = population.players;
+        const players = window.population.players;
         const n = arguments[0];
         for (let f = 0; f < n; f++) {
             for (let idx = 0; idx < players.length; idx++) {
@@ -439,7 +438,7 @@ class JumpKingEnv_Multi(gym.Env):
         """
     
         return (
-            (states[:, COL_LEVEL] == FINAL_LEVEL)       # level
+            (states[:, COL_LEVEL] == FINAL_LEVEL)   # level
             & (states[:, COL_X] >= PRINCESS_X_MIN)  # x
             & (states[:, COL_Y] <= PRINCESS_Y_MAX)  # y
         )
@@ -494,7 +493,7 @@ class JumpKingEnv_Multi(gym.Env):
         # Reset just dead agents in JS
         self.driver.execute_script(
             """
-            const players   = population.players; 
+            const players   = window.population.players; 
             const idxs      = arguments[0]; 
             for (const i of idxs) { 
                 players[i].ResetPlayer()
@@ -527,7 +526,7 @@ class JumpKingEnv_Multi(gym.Env):
         
         # Reset all N players in JS — single round-trip
         self.driver.execute_script("""
-        const players = population.players;
+        const players = window.population.players;
         for (let i = 0; i < players.length; i++) {
             players[i].ResetPlayer();
         }
