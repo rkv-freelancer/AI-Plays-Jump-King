@@ -30,7 +30,7 @@ from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
 # Environment (RL & GPU)
-from environment.jump_king_env import JumpKingEnv
+from environment.jump_king_env import JumpKingEnv_Multi
 import modal
 
 # Server 
@@ -44,6 +44,13 @@ OBS_DIM   = 9
 EMBED_DIM = 64
 # (MAX_FALL_PENALTY removed — PBRS in JumpKingEnv handles falls via telescoping;
 #  no asymmetric clip is needed any more.)
+
+# Column layout of _get_raw_state_all output
+COL_X, COL_Y, COL_VX, COL_VY     = 0, 1, 2, 3
+COL_GROUNDED, COL_JUMP_TIMER     = 4, 5
+COL_FACING_RIGHT, COL_LEVEL      = 6, 7
+COL_GLOBAL_HEIGHT, COL_IS_DEAD   = 8, 9
+N_RAW_STATE_COLS                 = 10
  
 @dataclass
 class Args:
@@ -84,7 +91,8 @@ class Args:
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
     
-    gamma: float = 0.99
+    # Must be equal to `DEFAULT_GAMMA`
+    gamma: float = 0.999
     """the discount factor gamma"""
     
     gae_lambda: float = 0.95
@@ -118,9 +126,6 @@ class Args:
     
     target_kl: float = None
     """the target KL divergence threshold"""
-    
-    num_agents: int = 64
-    """number of agents trained for each rollout"""
 
     # RND arguments
     # Only 25% of the mini-batch randomly updates the RND predictor each pass. Prevents the predictor from memorising the training distribution too quickly.
@@ -134,7 +139,7 @@ class Args:
     ext_coef: float = 2.5
     """coefficient of intrinsic reward"""
     
-    int_gamma: float = 0.99
+    int_gamma: float = 0.999
     """Intrinsic reward discount rate"""
     
     num_iterations_obs_norm_init: int = 10
@@ -348,7 +353,6 @@ if __name__ == "__main__":
             sync_tensorboard=True,
             config=vars(args),
             name=run_name,
-            monitor_gym=True,
             save_code=True,
         )
     writer = SummaryWriter(f"runs/{run_name}")
@@ -368,6 +372,7 @@ if __name__ == "__main__":
         "mps"  if torch.backends.mps.is_available() else
         "cpu"
     )
+    
     if device.type == "cuda":
         torch.backends.cudnn.deterministic = args.torch_deterministic
     
@@ -392,9 +397,8 @@ if __name__ == "__main__":
     # IMPORTANT: pass args.gamma so the env's PBRS shaping uses the *same*
     # discount factor as PPO's advantage estimation. If they disagree, the
     # Ng-Harada-Russell invariance theorem stops applying.
-    env = JumpKingEnv(driver, frame_skip=4, gamma=args.gamma)
-    env = gym.wrappers.RecordEpisodeStatistics(env)
-    assert isinstance(env.action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    env = JumpKingEnv_Multi(driver = driver, num_agents = args.num_envs, frame_skip = 4, gamma=args.gamma)
+    assert isinstance(env.single_action_space, gym.spaces.Discrete)
 
     # (gym.wrappers.RecordVideo deliberately NOT used here — it triggers on
     #  episode index and writes only to disk. We want trigger-on-update +
@@ -402,77 +406,93 @@ if __name__ == "__main__":
     if args.capture_video:
         os.makedirs(args.video_folder, exist_ok=True)
 
-    agent = Agent(env.action_space.n).to(device)
+    agent = Agent(env.single_action_space.n).to(device)
     rnd_model = RNDModel(OBS_DIM, EMBED_DIM).to(device)
     
     combined_parameters = list(agent.parameters()) + list(rnd_model.predictor.parameters())
     optimizer = optim.Adam(
         combined_parameters,
-        lr=args.learning_rate,
-        eps=1e-5,
+        lr = args.learning_rate,
+        eps = 1e-5,
     )
 
     os.makedirs("checkpoints", exist_ok=True)
 
-    reward_rms = RunningMeanStd()
-    obs_rms = RunningMeanStd(shape=(OBS_DIM, ))
-    discounted_reward = RewardForwardFilter(args.int_gamma)
+    reward_rms          = RunningMeanStd()
+    obs_rms             = RunningMeanStd(shape=(OBS_DIM, ))
+    discounted_reward   = RewardForwardFilter(args.int_gamma)
 
-    # ALGO Logic: Storage setup
-    obs = torch.zeros((args.num_steps, args.num_envs) + env.observation_space.shape).to(device)
-    actions = torch.zeros((args.num_steps, args.num_envs) + env.action_space.shape).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    curiosity_rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    ext_values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    int_values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    # Storage setup
+    obs                 = torch.zeros((args.num_steps, args.num_envs, OBS_DIM)).to(device)
+    actions             = torch.zeros((args.num_steps, args.num_envs), dtype=torch.long).to(device)
+    logprobs            = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    rewards             = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    curiosity_rewards   = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    dones               = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    ext_values          = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    int_values          = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
     # TRY NOT TO MODIFY: start the game
-    global_step = 0
-    start_time = time.time()
-    next_obs_np, _ = env.reset()
-    # add num_envs dim → (1, 9)
-    next_obs = torch.Tensor(next_obs_np).unsqueeze(0).to(device)
-    next_done = torch.zeros(args.num_envs).to(device)
-    num_updates = args.total_timesteps // args.batch_size
+    global_step         = 0
+    start_time          = time.time()
+    next_obs_np, _      = env.reset()
+    
+    next_obs            = torch.Tensor(next_obs_np).to(device)
+    next_done           = torch.zeros(args.num_envs).to(device)
+    num_updates         = args.total_timesteps // args.batch_size
 
     # ── Per-episode diagnostic trackers ──────────────────────────────────────
     # ep_max_level   : highest level the agent reached this episode (progress, not oscillation)
     # ep_jump_fires  : count of (jump-action → non-jump-action) transitions = real jump releases
     # prev_was_jump  : whether the *previous* action was a jump-charge (idx 3, 4, 5)
     # total_episodes : running count of completed episodes across the whole run
-    JUMP_ACTIONS   = {3, 4, 5}
-    ep_max_level   = 0
-    ep_jump_fires  = 0
-    prev_was_jump  = False
-    total_episodes = 0
+    JUMP_ACTIONS        = {3, 4, 5}
+    
+    ep_max_level        = np.zeros(args.num_envs, dtype = np.int32)
+    ep_jump_fires       = np.zeros(args.num_envs, dtype = np.int32)
+    prev_was_jump       = np.zeros(args.num_envs, dtype = bool)
+    ep_return           = np.zeros(args.num_envs, dtype = np.float32)
+    ep_length           = np.zeros(args.num_envs, dtype = np.int32)
+    total_episodes      = 0
 
     # ── Video recording state ────────────────────────────────────────────────
     # recording_active : True for the duration of one trigger rollout
     # video_frames     : rgb_array frames captured during that rollout
     # video_started_ep : the episode-index this recording started in, so we can
     #                    stop cleanly when that episode finishes (one episode per file)
-    recording_active = False
-    video_frames     = []
-    video_started_ep = -1
+    recording_active    = False
+    video_frames        = []
+    video_started_ep    = -1
 
     log.info("Start to initialize observation normalization parameter.....")
-    next_ob = []
-    for step in range(args.num_steps * args.num_iterations_obs_norm_init):
-        # Single int
-        ac = env.action_space.sample()
-        s, r, terminated, truncated, _ = env.step(ac)
-        next_ob.append(s)
+    
+    # Separate buffer for warm-up obs. Each entry is one (N, 9) chunk from env.step
+    warmup_buffer: list[np.ndarray] = []
+    
+    # Initialization Phase 
+    for step in range(args.num_steps * args.num_iterations_obs_norm_init):        
+        # Dim: (N, ) ints
+        action_np = env.action_space.sample()
         
-        if terminated or truncated:
-            env.reset()
-            
-        if len(next_ob) % args.num_steps == 0: 
-            obs_rms.update(np.array(next_ob))
-            next_ob = []
-            
+        # Automatic reset on vectorized environments
+        # Dim: (N, 9)
+        next_obs_np, _, _, _, _ = env.step(action_np)
+        
+        warmup_buffer.append(next_obs_np)
+        
+        # Every num_steps step-calls, flush the buffer into `obs_rms`.                
+        if len(warmup_buffer) % args.num_steps == 0: 
+            # Stack the `num_steps` chunks into one (num_steps * N, 9) array
+            flat = np.concatenate(warmup_buffer, axis = 0)
+            obs_rms.update(flat)
+            warmup_buffer.clear()
+               
     log.info("End to initialize...")
+    
+    # Reset env so the main rollout starts from a clean slate
+    next_obs_np, _      = env.reset()
+    next_obs            = torch.Tensor(next_obs_np).to(device)
+    next_done           = torch.zeros(args.num_envs, device = device)
 
     for update in range(1, num_updates + 1):
         # Annealing the rate if instructed to do so.
@@ -490,6 +510,7 @@ if __name__ == "__main__":
             video_started_ep = total_episodes
             log.info("[video] arming recorder for update %d (target ep #%d)", update, total_episodes)
 
+        # Rollout Phase
         for step in range(0, args.num_steps):
             global_step += 1 * args.num_envs
             obs[step] = next_obs
@@ -503,7 +524,7 @@ if __name__ == "__main__":
                     value_int.flatten(),
                 )
                 # Samples a fresh action from current policy
-                action, logprob, entropy, v_ext, v_int = agent.get_action_and_value(obs[step])
+                action, logprob, _, _, _ = agent.get_action_and_value(obs[step])
 
             actions[step] = action
             logprobs[step] = logprob
@@ -513,21 +534,35 @@ if __name__ == "__main__":
             # The actual jump fires the moment we switch back to a non-jump
             # action (0, 1, 2) — that is when _apply_action() calls player.Jump().
             # Counting these transitions confirms whether the agent ever even
-            # *attempts* the hold→release sequence the game requires.
-            act_int      = int(action.item())
-            curr_is_jump = act_int in JUMP_ACTIONS
-            if prev_was_jump and not curr_is_jump:
-                ep_jump_fires += 1
+            # *attempts* the hold→release sequence the game requires.  
+            action_np = action.cpu().numpy() 
+            curr_is_jump = np.isin(action_np, list(JUMP_ACTIONS))
+            
+            # Dim: (N, ) bool, one entry per agent
+            fired = prev_was_jump & ~curr_is_jump
+            
+            # Add 1 to each slot that fired
+            ep_jump_fires += fired.astype(np.int32)
+
             prev_was_jump = curr_is_jump
 
             # TRY NOT TO MODIFY: execute the game and log data.
-            next_obs, reward, terminated, truncated, info = env.step(action.item())
-            done = terminated or truncated
-
+            next_obs_np, reward, terminated, truncated, info = env.step(action_np)
+            
+            done = terminated | truncated
+            # array of agent indices that just finished
+            done_idxs = np.where(done)[0] 
+            
+            # Per-agent return / length accumulation
+            # Dim: (N, ) += (N, )
+            ep_return += reward
+            ep_length += 1 
+            
             # Track the highest level reached this episode — distinguishes
             # genuine progress from up-down oscillation on a single platform.
-            ep_max_level = max(ep_max_level, int(info["state"]["level"]))
-
+            # ep_max_level = max(ep_max_level, int(info["state"]["level"]))
+            ep_max_level = np.maximum(ep_max_level, info["state"][:, COL_LEVEL].astype(int))
+            
             # ── Frame capture (only while recorder is armed) ─────────────────
             # env.render() returns an (H, W, 3) uint8 rgb_array of the canvas.
             # We stop appending the moment one full episode finishes so the
@@ -535,42 +570,39 @@ if __name__ == "__main__":
             if recording_active:
                 video_frames.append(env.render())
 
-            if done:
+            for k in done_idxs: 
                 total_episodes += 1
                 log.info(
-                    "[episode #%d] step=%d return=%.2f length=%d max_level=%d jump_fires=%d success=%s",
-                    total_episodes, global_step,
-                    info["episode"]["r"], info["episode"]["l"],
-                    ep_max_level, ep_jump_fires,
-                    bool(info.get("success", False)),
+                    "[episode #%d agent=%d] step=%d return=%.2f length=%d max_level=%d jump_fires=%d success=%s",
+                    total_episodes, k, global_step,
+                    ep_return[k], ep_length[k], ep_max_level[k], ep_jump_fires[k],
+                    bool(info["success"][k]),
                 )
-                writer.add_scalar("charts/episodic_return",     info["episode"]["r"], global_step)
-                writer.add_scalar("charts/episodic_length",     info["episode"]["l"], global_step)
-                writer.add_scalar("charts/episodic_max_level",  ep_max_level,         global_step)
-                writer.add_scalar("charts/episodic_jump_fires", ep_jump_fires,        global_step)
-                writer.add_scalar("charts/episodic_success",    float(info.get("success", False)), global_step)
-                writer.add_scalar("charts/total_episodes",      total_episodes,       global_step)
-
-                # If we just captured a full episode, disarm the recorder.
-                if recording_active and total_episodes > video_started_ep:
-                    recording_active = False   # stop capturing for the rest of the rollout
-
-                # Reset trackers for the next episode
-                ep_max_level  = 0
-                ep_jump_fires = 0
-                prev_was_jump = False
-
-                # Reset env so the NEXT rollout step starts from a fresh state.
-                # Without this, the env keeps stepping from the terminal state
-                # and one "episode" spans the whole training run.
-                next_obs, _ = env.reset()
+                
+                writer.add_scalar("charts/episodic_return",     ep_return[k],     global_step)
+                writer.add_scalar("charts/episodic_length",     ep_length[k],     global_step)
+                writer.add_scalar("charts/episodic_max_level",  ep_max_level[k],  global_step)
+                writer.add_scalar("charts/episodic_jump_fires", ep_jump_fires[k], global_step)
+                writer.add_scalar("charts/episodic_success",    float(info["success"][k]), global_step)
+                writer.add_scalar("charts/total_episodes",      total_episodes,   global_step)
+                                
+            # Per-agent tracker reset
+            ep_max_level[done_idxs]  = 0
+            ep_jump_fires[done_idxs] = 0
+            ep_return[done_idxs]     = 0.0
+            ep_length[done_idxs]     = 0
+            prev_was_jump[done_idxs] = False
+            
+            # If we just captured a full episode, disarm the recorder.
+            if recording_active and total_episodes > video_started_ep:
+                recording_active = False   # stop capturing for the rest of the rollout
 
             rewards[step] = torch.tensor(reward).to(device).view(-1)
 
-            next_obs = torch.Tensor(next_obs).unsqueeze(0).to(device)  # (9,) → (1, 9)
-            next_done = torch.Tensor([done]).to(device)                 # scalar → (1,)
+            next_obs = torch.Tensor(next_obs).to(device)  
+            next_done = torch.Tensor(done.astype(np.float32)).to(device)            
             
-            # next_obs is (1, 9) — normalise the single current step for RND
+            # TODO: Checkpoint
             rnd_next_obs = (
                 (
                     (next_obs - torch.from_numpy(obs_rms.mean).float().to(device))
@@ -585,11 +617,21 @@ if __name__ == "__main__":
         curiosity_reward_per_env = np.array(
             [discounted_reward.update(reward_per_step) for reward_per_step in curiosity_rewards.cpu().data.numpy().T]
         )
+        
+        curiosity_reward_per_env = []
+        for reward_per_step in curiosity_rewards.cpu().data.numpy().T:
+            # Reset state per agent's trajectory
+            discounted_reward.rewems = None
+            curiosity_reward_per_env.append(discounted_reward.update(reward_per_step))
+        
+        curiosity_reward_per_env = np.array(curiosity_reward_per_env)
+        
         mean, std, count = (
             np.mean(curiosity_reward_per_env),
             np.std(curiosity_reward_per_env),
             len(curiosity_reward_per_env),
         )
+        
         reward_rms.update_from_moments(mean, std**2, count)
 
         # Capture RAW intrinsic mean before in-place normalization, so we can
@@ -601,18 +643,23 @@ if __name__ == "__main__":
         # bootstrap value if not done
         with torch.no_grad():
             next_value_ext, next_value_int = agent.get_value(next_obs)
-            next_value_ext, next_value_int = next_value_ext.reshape(1, -1), next_value_int.reshape(1, -1)
+            next_value_ext = next_value_ext.flatten()
+            next_value_int = next_value_int.flatten()
+            
             ext_advantages = torch.zeros_like(rewards, device=device)
             int_advantages = torch.zeros_like(curiosity_rewards, device=device)
             ext_lastgaelam = 0
             int_lastgaelam = 0
+            
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
                     ext_nextnonterminal = 1.0 - next_done
                     int_nextnonterminal = 1.0
+                    # Dim: (N, 1)
                     ext_nextvalues = next_value_ext
                     int_nextvalues = next_value_int
                 else:
+                    # Dim: (N, )
                     ext_nextnonterminal = 1.0 - dones[t + 1]
                     int_nextnonterminal = 1.0
                     ext_nextvalues = ext_values[t + 1]
@@ -629,7 +676,7 @@ if __name__ == "__main__":
             int_returns = int_advantages + int_values
 
         # flatten the batch
-        b_obs = obs.reshape((-1,) + env.observation_space.shape)
+        b_obs = obs.reshape((-1, OBS_DIM))
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape(-1)
         b_ext_advantages = ext_advantages.reshape(-1)
@@ -765,13 +812,13 @@ if __name__ == "__main__":
         # Directly diagnoses the "agent only walks right" failure mode: if
         # action 2 (walk right) dominates, you can see it here in one glance.
         flat_actions  = actions.cpu().numpy().astype(int).flatten()
-        action_counts = np.bincount(flat_actions, minlength=env.action_space.n)
+        action_counts = np.bincount(flat_actions, minlength=env.single_action_space.n)
         action_freqs  = action_counts / max(len(flat_actions), 1)
         action_names  = ["idle", "left", "right", "jump_neutral", "jump_left", "jump_right"]
         for i, (name, freq) in enumerate(zip(action_names, action_freqs)):
             writer.add_scalar(f"actions/freq_{i}_{name}", freq, global_step)
         # Full histogram view (W&B will render it as a bar chart over time)
-        writer.add_histogram("actions/distribution", flat_actions, global_step, bins=env.action_space.n)
+        writer.add_histogram("actions/distribution", flat_actions, global_step, bins=env.single_action_space.n)
 
         if update % args.save_interval == 0:
             torch.save(agent.state_dict(), f"checkpoints/agent_{global_step}.pt")
