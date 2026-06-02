@@ -563,7 +563,7 @@ class JumpKingEnv_Multi(gym.Env):
         # ── Termination 
         # ───────────────────────────────────────────────────────
         
-        success = self._is_at_princess_all(states)
+        success = self._is_at_princess_all(states).astype(bool)
         fell_out = states[:, COL_IS_DEAD].astype(bool)    # is_dead column -> bool
 
         terminated = success | fell_out
