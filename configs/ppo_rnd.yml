@@ -15,7 +15,7 @@ num_steps: 64 # → batch_size = 1024, num_updates = 488
 num_minibatches: 4 # → minibatch_size = 256
 update_epochs: 4
 
-learning_rate: 3e-4 # higher than 1e-4: 488 updates need to move the policy
+learning_rate: 3.0e-4 # higher than 1e-4: 488 updates need to move the policy
 anneal_lr: true
 
 # γ MUST equal env.DEFAULT_GAMMA — invariance check

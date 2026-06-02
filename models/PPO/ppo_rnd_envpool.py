@@ -412,7 +412,7 @@ if __name__ == "__main__":
     combined_parameters = list(agent.parameters()) + list(rnd_model.predictor.parameters())
     optimizer = optim.Adam(
         combined_parameters,
-        lr = args.learning_rate,
+        lr = float(args.learning_rate),
         eps = 1e-5,
     )
 
@@ -602,7 +602,6 @@ if __name__ == "__main__":
             next_obs = torch.Tensor(next_obs_np).to(device)  
             next_done = torch.Tensor(done.astype(np.float32)).to(device)            
             
-            # TODO: Checkpoint
             rnd_next_obs = (
                 (
                     (next_obs - torch.from_numpy(obs_rms.mean).float().to(device))
