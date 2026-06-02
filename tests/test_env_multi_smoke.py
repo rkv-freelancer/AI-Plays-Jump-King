@@ -77,13 +77,22 @@ def test_done_agents_get_fresh_obs(env_multi, monkeypatch):
     obs, rewards, terminated, truncated, info = env.step(actions)
 
     # Agent 1 must be flagged as terminated
-    assert terminated[1] == True, "forced success should mark agent 1 terminated"
+    assert info['success'][1] == True, "forced success should mark agent 1 terminated"
 
     # Agent 1 must have received the success bonus (≥ SUCCESS_REWARD - small step penalty)
     from environment.jump_king_env import SUCCESS_REWARD, STEP_PENALTY
-    assert rewards[1] >= SUCCESS_REWARD + STEP_PENALTY - 1.0, (
-        f"agent 1 expected success bonus, got reward={rewards[1]}"
+    # (a) The bonus is in the BASE reward — independent of PBRS shaping noise.
+    expected_base = STEP_PENALTY + SUCCESS_REWARD       # = 9.99
+    assert info["base_reward"][1] == pytest.approx(expected_base, abs=1e-3), (
+        f"agent 1 expected base_reward = {expected_base}, "
+        f"got {info['base_reward'][1]}"
     )
+
+    # (b) Other agents must NOT have the bonus — only agent 1 is forced-success.
+    for k in (0, 2, 3):
+        assert info["base_reward"][k] == pytest.approx(STEP_PENALTY, abs=1e-3), (
+            f"agent {k} should have only STEP_PENALTY, got {info['base_reward'][k]}"
+        )
 
     # Agent 1's slot in returned obs must be the FRESH start state (post-reset),
     # while info["final_observation"][1] must be the TERMINAL state (pre-reset).
