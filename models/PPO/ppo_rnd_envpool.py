@@ -512,7 +512,7 @@ if __name__ == "__main__":
 
         # Rollout Phase
         for step in range(0, args.num_steps):
-            global_step += 1 * args.num_envs
+            global_step += args.num_envs
             obs[step] = next_obs
             dones[step] = next_done
 
@@ -599,7 +599,7 @@ if __name__ == "__main__":
 
             rewards[step] = torch.tensor(reward).to(device).view(-1)
 
-            next_obs = torch.Tensor(next_obs).to(device)  
+            next_obs = torch.Tensor(next_obs_np).to(device)  
             next_done = torch.Tensor(done.astype(np.float32)).to(device)            
             
             # TODO: Checkpoint
@@ -613,12 +613,9 @@ if __name__ == "__main__":
             target_next_feature = rnd_model.target(rnd_next_obs)
             predict_next_feature = rnd_model.predictor(rnd_next_obs)
             curiosity_rewards[step] = ((target_next_feature - predict_next_feature).pow(2).sum(1) / 2).data
-                
-        curiosity_reward_per_env = np.array(
-            [discounted_reward.update(reward_per_step) for reward_per_step in curiosity_rewards.cpu().data.numpy().T]
-        )
-        
+                        
         curiosity_reward_per_env = []
+        
         for reward_per_step in curiosity_rewards.cpu().data.numpy().T:
             # Reset state per agent's trajectory
             discounted_reward.rewems = None
