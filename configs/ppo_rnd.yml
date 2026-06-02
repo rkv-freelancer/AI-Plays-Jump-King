@@ -6,78 +6,47 @@
 # batch_size = num_envs × num_steps
 # num_updates = total_timesteps ÷ batch_size
 
-# ── Experiment ────────────────────────────────────────────────────────────────
-seed: 42
-torch_deterministic: true
+# 500k timesteps, vectorised N=16, video-rich for visual diagnosis
+# Wall-clock target: ~40-60 min on T4, ~$1 cost
 
-# ── Hardware ──────────────────────────────────────────────────────────────────
-# Device auto-selects MPS on Apple Silicon; cuda flag reserved for Modal/GPU cloud
-cuda: true
+total_timesteps: 500_000
+num_envs: 16 # 16 parallel agents in one browser
+num_steps: 64 # → batch_size = 1024, num_updates = 488
+num_minibatches: 4 # → minibatch_size = 256
+update_epochs: 4
 
-# ── Tracking ──────────────────────────────────────────────────────────────────
-wandb_project_name: jump_king_ppo_rnd
-wandb_entity: null
-
-# ── Training loop ─────────────────────────────────────────────────────────────
-total_timesteps: 1024
-# learning_rate: 1.0e-4
-learning_rate: 3.0e-4
-
-num_envs: 4
-num_steps: 32
+learning_rate: 3e-4 # higher than 1e-4: 488 updates need to move the policy
 anneal_lr: true
 
-# ── PPO ───────────────────────────────────────────────────────────────────────
-# extrinsic reward discount
+# γ MUST equal env.DEFAULT_GAMMA — invariance check
 gamma: 0.999
-
-# GAE smoothing
 gae_lambda: 0.95
+int_gamma: 0.999 # match extrinsic (was 0.99 — be consistent if you want)
 
-num_minibatches: 4
-update_epochs: 4
-norm_adv: true
-
-# policy ratio stays in [0.7, 1.3]
 clip_coef: 0.1
 clip_vloss: true
-
-# entropy bonus weight
-# ent_coef: 0.001
-ent_coef: 0.01
-
-# value loss weight
+ent_coef: 0.01 # 10× the dataclass default → combat entropy collapse
 vf_coef: 0.5
-
 max_grad_norm: 0.5
-
-# set a float (e.g. 0.01) to enable early stopping
 target_kl: null
+norm_adv: true
 
-# ── RND ───────────────────────────────────────────────────────────────────────
-# fraction of mini-batch that trains the RND predictor
-update_proportion: 0.25
-
-# intrinsic advantage weight
 int_coef: 1.0
-
-# extrinsic advantage weight
-ext_coef: 2.0
-
-# intrinsic reward discount
-int_gamma: 0.99
-
-# random rollouts before training starts
+ext_coef: 2.0 # slightly down from 2.5; ext stream still un-normalised
+update_proportion: 0.25
 num_iterations_obs_norm_init: 10
 
-# ── Checkpointing ─────────────────────────────────────────────────────────────
-# save a checkpoint every N policy updates
-save_interval: 25
+# ── Checkpoints & videos ─────────────────────────────────────────────
+save_interval: 50 # ~10 checkpoints over the run
+capture_video: true
+video_record_interval: 10 # ~48 videos uploaded — denser than default for visual debug
+video_fps: 30
+video_folder: "models/PPO/video"
 
-# ── Video ─────────────────────────────────────────────────────────────
-# videos_upload = num_updates ÷ video_record_interval
-# video_duration = (frames captured) ÷ video_fps
-video_record_interval: 10
+# ── Tracking / logging ───────────────────────────────────────────────
+track: true
+log_level: "INFO"
 
-capture_video: false
-track: false
+seed: 42
+torch_deterministic: true
+cuda: true
