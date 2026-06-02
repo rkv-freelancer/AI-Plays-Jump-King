@@ -88,15 +88,15 @@ class JumpKingEnv_Single(gym.Env):
 
     def __init__(self, driver, frame_skip = 4, gamma: float = DEFAULT_GAMMA):
         super().__init__()
-        self.driver     = driver
-        self.frame_skip = frame_skip
+        self.driver                 = driver
+        self.frame_skip             = frame_skip
         # γ for the PBRS shaping term. MUST match the discount factor used by
         # the learner (PPO's args.gamma) — otherwise invariance is broken.
-        self.gamma      = float(gamma)
+        self.gamma                  = float(gamma)
 
-        self._prev_height     = 0.0
-        self._prev_jump_held  = False
-        self._step_count      = 0
+        self._prev_height           = 0.0
+        self._prev_jump_held        = False
+        self._step_count            = 0
 
         # 9 - dimensional continuous observation
         low  = np.array([-np.inf, -np.inf, -np.inf, -np.inf, 0, 0, 0, 0,  0],      dtype=np.float32)
@@ -271,7 +271,7 @@ class JumpKingEnv_Single(gym.Env):
 
 
 class JumpKingEnv_Multi(gym.Env):
-    """
+    """ 
     Gymnasium parallel environment for Jump King.
 
     One step = `frame_skip` physics frames.
@@ -579,12 +579,15 @@ class JumpKingEnv_Multi(gym.Env):
         # Reset the agents
         done_idxs = np.where(done)[0]
         fresh_obs = self._reset_agents(done_idxs)
-        final_obs = obs.copy()
         
+        final_obs   = obs.copy()
+        state_snapshot = states.copy()
+        
+        # Return observations with terminal states
         obs[done_idxs] = fresh_obs
         
         return obs, rewards, terminated, truncated, {
-            "state": states,
+            "state": state_snapshot,
             "final_observation": final_obs,
             "success": success, 
             "shaping_reward": shaping_rewards, 
