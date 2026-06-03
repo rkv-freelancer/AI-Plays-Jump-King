@@ -311,9 +311,25 @@ class JumpKingEnv_Multi(gym.Env):
         )
         self.action_space = spaces.MultiDiscrete([len(ACTION_MAP)] * num_agents)
         
-        # Create the JS Population once, on the window so it persists across calls
+        # Create the JS Population once and bind it to BOTH names that matter:
+        #
+        #   • the lexical global `population` (declared `let population` in
+        #     sketch.js) — this is what draw() and Player.Show() reference, so
+        #     it MUST point at our agents or the canvas keeps rendering the
+        #     unrelated 600-player GA population created in setup().
+        #   • window.population — what every other script in this env reads
+        #     (_get_raw_state_all, _apply_action_all, _step_frames_all, reset…).
+        #
+        # The bare `population = ...` assignment (no var/let/window) resolves up
+        # the scope chain to sketch.js's lexical global and reassigns it. Then we
+        # alias window.population to the same object so both views stay in sync.
+        # Finally flip draw() into RL render mode (draws every agent, no GA step).
         self.driver.execute_script(
-            "window.population = new Population(arguments[0]);",
+            """
+            population = new Population(arguments[0]);
+            window.population = population;
+            rlRenderMode = true;
+            """,
             self.num_agents
         )
         

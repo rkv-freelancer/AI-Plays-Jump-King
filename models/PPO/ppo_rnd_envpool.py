@@ -153,16 +153,30 @@ class Args:
     """if toggled, periodically record one episode and upload to W&B"""
 
     video_record_interval: int = 25
-    """record a video every N policy updates (25 updates ≈ 12,800 steps ≈ 4 min @ 56 SPS).
-       Trade-off: lower = denser feedback but more wall-clock overhead. The recorded
-       segment is at most one full episode (≤ MAX_EPISODE_STEPS frames ≈ 66 s @ 30 fps)."""
+    """arm a fresh periodic recording every N policy updates. Once armed, the
+       recorder streams frames across as many steps/updates as needed to reach
+       `video_length_seconds`, then flushes one mp4 and waits for the next
+       interval. Lower = denser feedback but more wall-clock spent rendering."""
 
     video_folder: str = "models/PPO/video"
-    """local staging directory for mp4 files (deleted after W&B upload)"""
+    """staging directory for mp4 files. Kept on disk when track=False (so you can
+       watch them); deleted after upload when track=True (W&B owns the copy)."""
 
     video_fps: int = 30
     """playback fps for the saved mp4 (game runs at 4 sim-frames per env.step,
-       so 30 fps ≈ real-time visual playback when frame_skip=4)"""
+       so 30 fps ≈ real-time visual playback when frame_skip=4). Also sets how
+       many captured frames map to one second of `video_length_seconds`."""
+
+    video_length_seconds: float = 120.0
+    """target length of each PERIODIC training video. One frame is captured per
+       env.step while armed, so length ≈ video_length_seconds × video_fps steps
+       of footage. Frames stream straight to disk, so memory stays flat even for
+       multi-minute clips. Set 60–300 for 1–5 minute videos."""
+
+    newlevel_video_seconds: float = 30.0
+    """length of the dedicated achievement clip recorded the FIRST time any agent
+       reaches a brand-new global max level. Independent of the periodic recorder
+       — both can run at once and share each rendered frame."""
 
     # ── Logging ──────────────────────────────────────────────────────────────
     log_level: str = "INFO"
@@ -322,6 +336,87 @@ class RewardForwardFilter:
             self.rewems = self.rewems * self.gamma + rews
         return self.rewems
 
+
+class VideoStreamer:
+    """
+    Streams rgb_array frames straight to an mp4 via imageio, so a multi-minute
+    recording never holds thousands of full-res frames in RAM.
+
+    A 1200×950×3 frame is ~3.4 MB; a 2-minute clip at 30 fps is 3,600 frames ≈
+    12 GB if buffered in a list. Streaming to disk keeps memory flat regardless
+    of clip length.
+
+    Lifecycle:
+        rec.start(path)   open the writer (begins a new clip)
+        rec.add(frame)    append one frame  (no-op if not active)
+        rec.is_full       True once target_frames have been written
+        rec.finish(...)   close writer, optionally upload to W&B, optionally
+                          delete the local file, reset to idle
+
+    `is_active` lets the rollout loop skip the (slow) env.render() Selenium
+    round-trip on steps where no recorder wants a frame.
+    """
+
+    def __init__(self, fps: int, target_frames: int, wandb_key: str, track: bool):
+        self.fps           = fps
+        self.target_frames = target_frames
+        self.wandb_key     = wandb_key
+        self.track         = track
+        self._writer       = None
+        self._path         = None
+        self._count        = 0
+
+    @property
+    def is_active(self) -> bool:
+        return self._writer is not None
+
+    @property
+    def is_full(self) -> bool:
+        return self._writer is not None and self._count >= self.target_frames
+
+    def start(self, path: str) -> None:
+        import imageio
+        self._writer = imageio.get_writer(path, fps=self.fps, macro_block_size=1)
+        self._path   = path
+        self._count  = 0
+
+    def add(self, frame) -> None:
+        if self._writer is not None:
+            self._writer.append_data(frame)
+            self._count += 1
+
+    def finish(self, log, global_step: int) -> None:
+        if self._writer is None:
+            return
+        try:
+            self._writer.close()
+        except Exception as e:
+            log.warning("[video] writer close failed for %s: %s", self._path, e)
+        n, path      = self._count, self._path
+        self._writer = None
+        self._path   = None
+        self._count  = 0
+        if n == 0:
+            return
+        log.info("[video] wrote %d frames → %s (%.1f s @ %d fps)",
+                 n, path, n / self.fps, self.fps)
+        if self.track:
+            try:
+                import wandb
+                wandb.log(
+                    {self.wandb_key: wandb.Video(path, fps=self.fps, format="mp4")},
+                    step=global_step,
+                )
+                log.info("[video] uploaded %s to W&B at step %d", self.wandb_key, global_step)
+            except Exception as e:
+                log.warning("[video] W&B upload failed for %s: %s", path, e)
+            # W&B has copied it into its media dir — drop the staging file.
+            try:
+                os.remove(path)
+            except OSError as e:
+                log.warning("[video] could not delete %s: %s", path, e)
+        # When not tracking, KEEP the local mp4 so it can be watched directly.
+
 if __name__ == "__main__":
     args = load_args("configs/ppo_rnd.yml")
     args.batch_size = int(args.num_envs * args.num_steps)
@@ -456,13 +551,29 @@ if __name__ == "__main__":
     total_episodes      = 0
 
     # ── Video recording state ────────────────────────────────────────────────
-    # recording_active : True for the duration of one trigger rollout
-    # video_frames     : rgb_array frames captured during that rollout
-    # video_started_ep : the episode-index this recording started in, so we can
-    #                    stop cleanly when that episode finishes (one episode per file)
-    recording_active    = False
-    video_frames        = []
-    video_started_ep    = -1
+    # Two independent streaming recorders, both fed from the same env.render()
+    # frame on any step where at least one is active:
+    #
+    #   periodic_rec  : a long (1–5 min) training video, re-armed every
+    #                   video_record_interval updates. Spans multiple episodes /
+    #                   updates until it has video_length_seconds of footage.
+    #   newlevel_rec  : a short achievement clip, armed the first time ANY agent
+    #                   reaches a new global max level (best_level_so_far).
+    #
+    # Streaming to disk keeps memory flat no matter how long the clip is.
+    periodic_rec = VideoStreamer(
+        fps           = args.video_fps,
+        target_frames = int(args.video_length_seconds * args.video_fps),
+        wandb_key     = "video/training",
+        track         = args.track,
+    )
+    newlevel_rec = VideoStreamer(
+        fps           = args.video_fps,
+        target_frames = int(args.newlevel_video_seconds * args.video_fps),
+        wandb_key     = "video/new_level",
+        track         = args.track,
+    )
+    best_level_so_far = 0   # highest global level any agent has reached this run
 
     log.info("Start to initialize observation normalization parameter.....")
     
@@ -501,14 +612,20 @@ if __name__ == "__main__":
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
-        # ── Trigger video recording for this rollout? ────────────────────────
-        # Records frames during the next rollout; saves & uploads once one
-        # full episode has been captured (or rollout ends with non-empty buf).
-        if args.capture_video and (update % args.video_record_interval == 0):
-            recording_active = True
-            video_frames     = []
-            video_started_ep = total_episodes
-            log.info("[video] arming recorder for update %d (target ep #%d)", update, total_episodes)
+        # ── Arm the periodic recorder? ───────────────────────────────────────
+        # Only (re)arm when it is idle — a long clip may still be filling across
+        # several updates, and we must not interrupt it mid-stream.
+        if (
+            args.capture_video
+            and not periodic_rec.is_active
+            and (update % args.video_record_interval == 0)
+        ):
+            path = os.path.join(
+                args.video_folder, f"update_{update:06d}_step_{global_step}.mp4"
+            )
+            periodic_rec.start(path)
+            log.info("[video] periodic recorder armed → %s (target %.0fs ≈ %d frames)",
+                     path, args.video_length_seconds, periodic_rec.target_frames)
 
         # Rollout Phase
         for step in range(0, args.num_steps):
@@ -563,12 +680,38 @@ if __name__ == "__main__":
             # ep_max_level = max(ep_max_level, int(info["state"]["level"]))
             ep_max_level = np.maximum(ep_max_level, info["state"][:, COL_LEVEL].astype(int))
             
-            # ── Frame capture (only while recorder is armed) ─────────────────
-            # env.render() returns an (H, W, 3) uint8 rgb_array of the canvas.
-            # We stop appending the moment one full episode finishes so the
-            # mp4 contains exactly one episode (cleanest for visual review).
-            if recording_active:
-                video_frames.append(env.render())
+            # ── Video: new-level trigger + shared frame capture ──────────────
+            if args.capture_video:
+                # Did any agent just reach a brand-new global max level? If so,
+                # arm the achievement recorder (unless it is already rolling).
+                cur_max_level = int(info["state"][:, COL_LEVEL].max())
+                if cur_max_level > best_level_so_far:
+                    best_level_so_far = cur_max_level
+                    if not newlevel_rec.is_active:
+                        path = os.path.join(
+                            args.video_folder,
+                            f"newlevel_L{cur_max_level:02d}_step_{global_step}.mp4",
+                        )
+                        newlevel_rec.start(path)
+                        log.info(
+                            "[video] NEW GLOBAL LEVEL %d reached — recording "
+                            "achievement clip → %s (%.0fs)",
+                            cur_max_level, path, args.newlevel_video_seconds,
+                        )
+
+                # One render() shared by every active recorder. env.render()
+                # returns an (H, W, 3) uint8 rgb_array of the canvas, now showing
+                # ALL agents (window.population) via the rlRenderMode draw path.
+                if periodic_rec.is_active or newlevel_rec.is_active:
+                    frame = env.render()
+                    periodic_rec.add(frame)   # no-op if that recorder is idle
+                    newlevel_rec.add(frame)
+
+                # Flush whichever recorder has hit its frame budget.
+                if periodic_rec.is_full:
+                    periodic_rec.finish(log, global_step)
+                if newlevel_rec.is_full:
+                    newlevel_rec.finish(log, global_step)
 
             for k in done_idxs: 
                 total_episodes += 1
@@ -592,10 +735,6 @@ if __name__ == "__main__":
             ep_return[done_idxs]     = 0.0
             ep_length[done_idxs]     = 0
             prev_was_jump[done_idxs] = False
-            
-            # If we just captured a full episode, disarm the recorder.
-            if recording_active and total_episodes > video_started_ep:
-                recording_active = False   # stop capturing for the rest of the rollout
 
             rewards[step] = torch.tensor(reward).to(device).view(-1)
 
@@ -821,37 +960,16 @@ if __name__ == "__main__":
             torch.save(agent.state_dict(), "checkpoints/agent_latest.pt")
             log.info("[checkpoint] saved at step %d", global_step)
 
-        # ── Video flush: write mp4, upload to W&B, delete local copy ─────────
-        # Triggered when we accumulated frames during this rollout AND the
-        # recorder has since been disarmed (i.e. we captured a complete episode).
-        # Also flushes if the rollout ended while still recording (partial ep).
-        if args.capture_video and len(video_frames) > 0 and (not recording_active or step == args.num_steps - 1):
-            try:
-                import imageio
-                video_path = os.path.join(
-                    args.video_folder, f"update_{update:06d}_step_{global_step}.mp4"
-                )
-                imageio.mimsave(video_path, video_frames, fps=args.video_fps, macro_block_size=1)
-                log.info("[video] wrote %d frames → %s (%.1f s @ %d fps)",
-                         len(video_frames), video_path,
-                         len(video_frames) / args.video_fps, args.video_fps)
-                if args.track:
-                    import wandb
-                    wandb.log(
-                        {"video/training": wandb.Video(video_path, fps=args.video_fps, format="mp4")},
-                        step=global_step,
-                    )
-                    log.info("[video] uploaded to W&B at step %d", global_step)
-                # Delete local copy — W&B has already absorbed it into its media dir
-                try:
-                    os.remove(video_path)
-                except OSError as e:
-                    log.warning("[video] could not delete local file %s: %s", video_path, e)
-            except Exception as e:
-                log.exception("[video] recording failed: %s", e)
-            finally:
-                video_frames     = []
-                recording_active = False
+        # (Video flushing now happens inline in the rollout loop the instant a
+        #  recorder hits its frame budget — see the "Video: new-level trigger +
+        #  shared frame capture" block above. Recorders that are still mid-clip
+        #  here simply keep streaming into the next update.)
+
+    # Flush any clips still in progress when training ends, so partial periodic /
+    # achievement videos are not lost.
+    if args.capture_video:
+        periodic_rec.finish(log, global_step)
+        newlevel_rec.finish(log, global_step)
 
     torch.save(agent.state_dict(), "checkpoints/agent_final.pt")
     log.info("[checkpoint] final model saved; %d episodes completed across %d steps",

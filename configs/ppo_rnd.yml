@@ -39,7 +39,17 @@ num_iterations_obs_norm_init: 10
 # ── Checkpoints & videos ─────────────────────────────────────────────
 save_interval: 50 # ~10 checkpoints over the run
 capture_video: true
-video_record_interval: 10 # ~48 videos uploaded — denser than default for visual debug
+
+# Video timing math (N=16, num_steps=64 → 64 steps/update, 488 updates total):
+#   1 captured frame = 1 env.step.  A clip of L seconds at video_fps captures
+#   L × video_fps frames = L × video_fps steps ≈ (L × video_fps / 64) updates.
+#   e.g. 90 s × 30 fps = 2700 frames ≈ 42 updates of footage.
+# The periodic recorder will NOT re-arm while a clip is still filling, so keep
+# video_record_interval comfortably LARGER than the clip's update-span to leave
+# a gap between clips (otherwise rendering every step dominates wall time).
+video_record_interval: 60 # arm a periodic clip every ~60 updates → ~6-8 clips
+video_length_seconds: 90 # each periodic clip is 1.5 min (set 60-300 for 1-5 min)
+newlevel_video_seconds: 30 # achievement clip when an agent first hits a new global level
 video_fps: 30
 video_folder: "models/PPO/video"
 
