@@ -4,6 +4,7 @@ import threading
 import time
 import os
 import functools
+from typing import Any
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -48,6 +49,18 @@ def launch_browser(headless: bool = False) -> webdriver.Chrome:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
+        # ── Renderer-crash hardening for long video captures ─────────────────
+        # Capturing thousands of canvas frames back-to-back (toDataURL) is the
+        # heaviest sustained load Chrome sees in this app and was OOM-killing the
+        # renderer ("tab crashed") in constrained containers. These flags trim
+        # memory/process overhead and disable subsystems we never use:
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-gpu-compositing")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-background-timer-throttling")
+        options.add_argument("--disable-renderer-backgrounding")
+        options.add_argument("--disable-features=Translate")
         # Allow overriding the Chrome binary (e.g. /usr/bin/chromium on Debian/Modal)
         chrome_bin = os.environ.get("CHROME_BIN")
         if chrome_bin:
@@ -57,7 +70,11 @@ def launch_browser(headless: bool = False) -> webdriver.Chrome:
     # Allow overriding the chromedriver path (e.g. /usr/bin/chromedriver on Debian/Modal)
     chromedriver_bin = os.environ.get("CHROMEDRIVER_BIN")
     service = Service(chromedriver_bin) if chromedriver_bin else None
-    return webdriver.Chrome(options=options, **({"service": service} if service else {}))
+
+    kwargs: dict[str, Any] = {"options": options}
+    if service is not None:
+        kwargs["service"] = service
+    return webdriver.Chrome(**kwargs)
 
 
 def wait_for_game(driver: webdriver.Chrome, timeout: int = 5):
