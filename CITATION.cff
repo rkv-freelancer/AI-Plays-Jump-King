@@ -1,5 +1,4 @@
 cff-version: 1.2.0
-message: "If you use or reference this project, please cite the following works."
 
 references:
   - type: article
@@ -55,3 +54,39 @@ references:
         given-names: Oleg
     year: 2018
     url: "https://arxiv.org/abs/1810.12894"
+
+  - type: article
+    title: "Prioritized Experience Replay"
+    authors:
+      - family-names: "Schaul"
+        given-names: "Tom"
+      - family-names: "Quan"
+        given-names: "John"
+      - family-names: "Antonoglou"
+        given-names: "Ioannis"
+      - family-names: "Silver"
+        given-names: "David"
+    journal: "arXiv preprint arXiv:1511.05952"
+    year: 2015
+    url: "https://arxiv.org/abs/1511.05952"
+
+  - type: conference-paper
+    title: "Self-Imitation Learning"
+    authors:
+      - family-names: "Oh"
+        given-names: "Junhyuk"
+      - family-names: "Guo"
+        given-names: "Yijie"
+      - family-names: "Singh"
+        given-names: "Satinder"
+      - family-names: "Lee"
+        given-names: "Honglak"
+    collection-title: "Proceedings of the 35th International Conference on Machine Learning"
+    collection-type: "proceedings"
+    volume: "80"
+    start: "3878"
+    end: "3887"
+    year: 2018
+    publisher:
+      name: "PMLR"
+    url: "https://proceedings.mlr.press/v80/oh18b.html"
