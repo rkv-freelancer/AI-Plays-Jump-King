@@ -3,7 +3,7 @@ Modal cloud training for Jump King PPO + RND.
 
 Usage (from project root):
     modal run modal/main.py                 # train with default config
-    modal run modal/main.py --detach        # fire-and-forget (returns immediately)
+    modal run -d modal/main.py              # fire-and-forget (returns immediately)
 
 First time only:
     pip install modal

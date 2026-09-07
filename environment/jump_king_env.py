@@ -476,8 +476,8 @@ class JumpKingEnv_Multi(gym.Env):
     
         return (
             (states[:, COL_LEVEL] == FINAL_LEVEL)   # level
-            & (PRINCESS_X_MAX >= states[:, COL_X] & states[:, COL_X] >= PRINCESS_X_MIN)  # x
-            & (PRINCESS_Y_MIN <= states[:, COL_Y] & states[:, COL_Y] <= PRINCESS_Y_MAX)  # y
+            & (states[:, COL_X] >= PRINCESS_X_MIN) & (states[:, COL_X] <= PRINCESS_X_MAX)  # x
+            & (states[:, COL_Y] >= PRINCESS_Y_MIN) & (states[:, COL_Y] <= PRINCESS_Y_MAX)  # y
         )
 
     def render(self):
