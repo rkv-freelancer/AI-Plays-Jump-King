@@ -21,9 +21,12 @@ ACTION_MAP = {
 # Main platform: y=360, player height=65 → currentPos.y ≈ 295 when standing.
 # Coin at (986, 306) confirms the right-side princess zone on that platform.
 # SUCCESS_ZONE is generous to ensure the agent gets credit for reaching the babe.
-FINAL_LEVEL       = 42      # 0-indexed last level
-PRINCESS_X_MIN    = 900     # princess is on the right portion of the platform
-PRINCESS_Y_MAX    = 340     # player y ≤ this when standing on (or near) the platform
+FINAL_LEVEL         = 42      # 0-indexed last level
+PRINCESS_X_MIN      = 930
+PRINCESS_X_MAX      = 1015
+PRINCESS_Y_MIN      = 280
+PRINCESS_Y_MAX      = 360
+
 SUCCESS_REWARD    = 10.0    # one-time bonus when episode ends with success
 STEP_PENALTY      = -0.01   # constant per-step base-MDP cost → encourages speed
 MAX_EPISODE_STEPS = 2000    # hard time-limit; episode is truncated after this
@@ -37,9 +40,21 @@ N_RAW_STATE_COLS                 = 10
 
 # Default discount factor for PBRS shaping. MUST match PPO's args.gamma — if
 # they disagree, the Ng-Harada-Russell invariance theorem no longer applies
-# and a new exploit can re-emerge. JumpKingEnv accepts gamma as a constructor
+# and a new exploit can re-emerge. `JumpKingEnv` accepts gamma as a constructor
 # argument; pass args.gamma explicitly from the training loop.
 DEFAULT_GAMMA     = 0.999
+
+# env.observation_space.shape[0]
+OBS_DIM   = 9
+
+# RND embedding size
+EMBED_DIM = 64
+
+# (MAX_FALL_PENALTY removed — PBRS in JumpKingEnv handles falls via telescoping;
+#  no asymmetric clip is needed any more.)
+EPS = 1e-5
+
+
 
 class JumpKingEnv_Single(gym.Env):
     """
@@ -255,15 +270,21 @@ class JumpKingEnv_Single(gym.Env):
         We trigger redraw() first because noLoop() pauses the p5.js draw loop —
         physics advances via player.Update() but the canvas pixels only refresh
         when redraw() is explicitly called.
+
+        JPEG (not PNG): encoding a 1200×950 PNG thousands of times back-to-back
+        is the dominant renderer-memory cost during a long video capture and was
+        crashing the Chrome tab ("tab crashed" = renderer OOM) in constrained
+        containers. JPEG at q=0.85 cuts per-call memory/CPU ~5-10× and is visually
+        indistinguishable for diagnostic playback.
         """
         self.driver.execute_script("redraw()")
         data_url = self.driver.execute_script(
-            "return document.querySelector('canvas').toDataURL('image/png');"
+            "return document.querySelector('canvas').toDataURL('image/jpeg', 0.85);"
         )
-        # Strip the "data:image/png;base64," prefix (always 22 chars for PNG)
-        png_b64  = data_url.split(",", 1)[1]
-        png_bytes = base64.b64decode(png_b64)
-        frame    = np.array(Image.open(io.BytesIO(png_bytes)).convert("RGB"))
+        # Strip the "data:image/jpeg;base64," prefix
+        jpg_b64   = data_url.split(",", 1)[1]
+        jpg_bytes = base64.b64decode(jpg_b64)
+        frame     = np.array(Image.open(io.BytesIO(jpg_bytes)).convert("RGB"))
         return frame
 
     def close(self):
@@ -455,13 +476,13 @@ class JumpKingEnv_Multi(gym.Env):
     
         return (
             (states[:, COL_LEVEL] == FINAL_LEVEL)   # level
-            & (states[:, COL_X] >= PRINCESS_X_MIN)  # x
-            & (states[:, COL_Y] <= PRINCESS_Y_MAX)  # y
+            & (PRINCESS_X_MAX >= states[:, COL_X] & states[:, COL_X] >= PRINCESS_X_MIN)  # x
+            & (PRINCESS_Y_MIN <= states[:, COL_Y] & states[:, COL_Y] <= PRINCESS_Y_MAX)  # y
         )
 
     def render(self):
         """
-        Returns a HxWx3 uint8 numpy array of the current canvas content.
+        Returns a H x W x 3 uint8 numpy array of the current canvas content.
 
         Uses canvas.toDataURL() (base64 PNG) rather than driver.get_screenshot_as_png()
         because:
@@ -472,17 +493,23 @@ class JumpKingEnv_Multi(gym.Env):
         We trigger redraw() first because noLoop() pauses the p5.js draw loop —
         physics advances via player.Update() but the canvas pixels only refresh
         when redraw() is explicitly called.
+
+        JPEG (not PNG): encoding a 1200 × 950 PNG thousands of times back-to-back
+        is the dominant renderer-memory cost during a long video capture and was
+        crashing the Chrome tab ("tab crashed" = renderer OOM) in constrained
+        containers. JPEG at q = 0.85 cuts per-call memory/CPU ~5-10× and is visually
+        indistinguishable for diagnostic playback.
         """
         self.driver.execute_script("redraw()")
         data_url = self.driver.execute_script(
-            "return document.querySelector('canvas').toDataURL('image/png');"
+            "return document.querySelector('canvas').toDataURL('image/jpeg', 0.85);"
         )
-        # Strip the "data:image/png;base64," prefix (always 22 chars for PNG)
-        png_b64  = data_url.split(",", 1)[1]
-        png_bytes = base64.b64decode(png_b64)
-        frame    = np.array(Image.open(io.BytesIO(png_bytes)).convert("RGB"))
+        # Strip the "data:image/jpeg;base64," prefix
+        jpg_b64   = data_url.split(",", 1)[1]
+        jpg_bytes = base64.b64decode(jpg_b64)
+        frame     = np.array(Image.open(io.BytesIO(jpg_bytes)).convert("RGB"))
         return frame
-        
+
     # ------------------------------------------------------------------
     # Gymnasium API (Custom for Parallel)
     # ------------------------------------------------------------------

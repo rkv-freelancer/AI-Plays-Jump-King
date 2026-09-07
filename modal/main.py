@@ -1,24 +1,26 @@
 """
-Modal cloud training for Jump King PPO+RND.
+Modal cloud training for Jump King PPO + RND.
 
 Usage (from project root):
-    modal run modal/main.py               # train with default config
-    modal run modal/main.py --detach      # fire-and-forget (returns immediately)
+    modal run modal/main.py                 # train with default config
+    modal run modal/main.py --detach        # fire-and-forget (returns immediately)
 
 First time only:
     pip install modal
-    modal token new          # authenticate with your Modal account
+    modal token new                         # authenticate with your Modal account
 
 Checkpoints are saved to a persistent Modal Volume named 'jump-king-checkpoints'.
 To download after a run:
     modal volume get jump-king-checkpoints checkpoints/ ./checkpoints
 """
 
+import subprocess
+import sys
 import modal
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent   # repo root
-
+# Repo Root
+PROJECT_ROOT = Path(__file__).resolve().parent.parent   
 app = modal.App("jump-king-ppo-rnd")
 
 # ── Container image ───────────────────────────────────────────────────────────
@@ -48,9 +50,9 @@ training_image = (
         # Testing — lets us run `python tests/main.py` inside the container
         "pytest>=8.0",
     )
-    # Attach project source — added at container startup, no layer rebuild needed
-    # when these change.  Put add_local_dir LAST per Modal docs (no further build
-    # steps allowed after, unless copy=True).
+    # Attach project source, added at container startup, no layer rebuild needed
+    # when these change.  Put `add_local_dir`` LAST per Modal docs (no further build
+    # steps allowed after, unless `copy = True`).
     .add_local_dir(str(PROJECT_ROOT / "game"),        remote_path="/root/project/game")
     .add_local_dir(str(PROJECT_ROOT / "environment"), remote_path="/root/project/environment")
     .add_local_dir(str(PROJECT_ROOT / "server"),      remote_path="/root/project/server")
@@ -67,11 +69,15 @@ checkpoints_vol = modal.Volume.from_name(
 
 # ── Training function ─────────────────────────────────────────────────────────
 @app.function(
-    image=training_image,
-    gpu="T4",              # ~$1.10/hr — swap to "T4" to save cost
-    timeout=3600 * 10,        # 10-hour hard cap
-    volumes={"/root/project/checkpoints": checkpoints_vol},
-    secrets=[
+    image   = training_image,
+    gpu     = "T4",             # ~$1.10/hr — swap to "T4" to save cost
+    memory  = 16384,            # 16 GB RAM — headroom for Chrome renderer during long
+                                # video captures (toDataURL on a 1200×950 canvas is
+                                # memory-heavy; default container RAM OOM-killed the tab)
+    timeout = 3600 * 8,         # 8-hour hard cap
+    
+    volumes = {"/root/project/checkpoints": checkpoints_vol},
+    secrets = [
         modal.Secret.from_dict({
             "CHROME_BIN":       "/usr/bin/chromium",
             "CHROMEDRIVER_BIN": "/usr/bin/chromedriver",
@@ -81,14 +87,11 @@ checkpoints_vol = modal.Volume.from_name(
     ],
 )
 def train():
-    import subprocess
-    import sys
-
     try:
         subprocess.run(
             [sys.executable, "models/PPO/ppo_rnd_envpool.py"],
-            cwd="/root/project",
-            check=True,
+            cwd = "/root/project",
+            check = True,
         )
     finally:
         # Commit even on crash / early stop so partial checkpoints survive
