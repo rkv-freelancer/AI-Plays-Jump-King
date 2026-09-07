@@ -492,7 +492,7 @@ if __name__ == "__main__":
     # IMPORTANT: pass args.gamma so the env's PBRS shaping uses the *same*
     # discount factor as PPO's advantage estimation. If they disagree, the
     # Ng-Harada-Russell invariance theorem stops applying.
-    env = JumpKingEnv_Multi(driver = driver, num_agents = args.num_envs, frame_skip = 4, gamma=args.gamma)
+    env = JumpKingEnv_Multi(driver = driver, num_agents = args.num_envs, frame_skip = 4, gamma = args.gamma)
     assert isinstance(env.single_action_space, gym.spaces.Discrete)
 
     # (gym.wrappers.RecordVideo deliberately NOT used here — it triggers on
@@ -681,37 +681,53 @@ if __name__ == "__main__":
             ep_max_level = np.maximum(ep_max_level, info["state"][:, COL_LEVEL].astype(int))
             
             # ── Video: new-level trigger + shared frame capture ──────────────
+            # Wrapped so a render failure (e.g. a Chrome renderer hiccup) degrades
+            # gracefully to "no more video" instead of killing the whole run —
+            # the policy keeps training and checkpoints keep saving.
             if args.capture_video:
-                # Did any agent just reach a brand-new global max level? If so,
-                # arm the achievement recorder (unless it is already rolling).
-                cur_max_level = int(info["state"][:, COL_LEVEL].max())
-                if cur_max_level > best_level_so_far:
-                    best_level_so_far = cur_max_level
-                    if not newlevel_rec.is_active:
-                        path = os.path.join(
-                            args.video_folder,
-                            f"newlevel_L{cur_max_level:02d}_step_{global_step}.mp4",
-                        )
-                        newlevel_rec.start(path)
-                        log.info(
-                            "[video] NEW GLOBAL LEVEL %d reached — recording "
-                            "achievement clip → %s (%.0fs)",
-                            cur_max_level, path, args.newlevel_video_seconds,
-                        )
+                try:
+                    # Did any agent just reach a brand-new global max level? If
+                    # so, arm the achievement recorder (unless already rolling).
+                    cur_max_level = int(info["state"][:, COL_LEVEL].max())
+                    if cur_max_level > best_level_so_far:
+                        best_level_so_far = cur_max_level
+                        if not newlevel_rec.is_active:
+                            path = os.path.join(
+                                args.video_folder,
+                                f"newlevel_L{cur_max_level:02d}_step_{global_step}.mp4",
+                            )
+                            newlevel_rec.start(path)
+                            log.info(
+                                "[video] NEW GLOBAL LEVEL %d reached — recording "
+                                "achievement clip → %s (%.0fs)",
+                                cur_max_level, path, args.newlevel_video_seconds,
+                            )
 
-                # One render() shared by every active recorder. env.render()
-                # returns an (H, W, 3) uint8 rgb_array of the canvas, now showing
-                # ALL agents (window.population) via the rlRenderMode draw path.
-                if periodic_rec.is_active or newlevel_rec.is_active:
-                    frame = env.render()
-                    periodic_rec.add(frame)   # no-op if that recorder is idle
-                    newlevel_rec.add(frame)
+                    # One render() shared by every active recorder. env.render()
+                    # returns an (H, W, 3) uint8 rgb_array of the canvas, now
+                    # showing ALL agents (window.population) via rlRenderMode.
+                    if periodic_rec.is_active or newlevel_rec.is_active:
+                        frame = env.render()
+                        periodic_rec.add(frame)   # no-op if that recorder is idle
+                        newlevel_rec.add(frame)
 
-                # Flush whichever recorder has hit its frame budget.
-                if periodic_rec.is_full:
-                    periodic_rec.finish(log, global_step)
-                if newlevel_rec.is_full:
-                    newlevel_rec.finish(log, global_step)
+                    # Flush whichever recorder has hit its frame budget.
+                    if periodic_rec.is_full:
+                        periodic_rec.finish(log, global_step)
+                    if newlevel_rec.is_full:
+                        newlevel_rec.finish(log, global_step)
+                except Exception as e:
+                    log.warning(
+                        "[video] capture failed at step %d (%s) — disabling video "
+                        "for the rest of the run; training continues.",
+                        global_step, e,
+                    )
+                    args.capture_video = False
+                    for _rec in (periodic_rec, newlevel_rec):
+                        try:
+                            _rec.finish(log, global_step)
+                        except Exception:
+                            pass
 
             for k in done_idxs: 
                 total_episodes += 1
