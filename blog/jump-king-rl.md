@@ -348,4 +348,4 @@ Even with batching, every step goes through Selenium. The two options are runnin
 - Ng, Harada & Russell, 1999. *Policy Invariance Under Reward Transformations*.
 - Ecoffet et al., 2021. *First return, then explore* (Go-Explore), *Nature*.
 
-**Code:** [github.com/rkv-freelancer/jump_king--personal_project](https://github.com/rkv-freelancer/jump_king--personal_project)
+**Code:** [github.com/rkv-freelancer/AI-Plays-Jump-King](https://github.com/rkv-freelancer/AI-Plays-Jump-King)

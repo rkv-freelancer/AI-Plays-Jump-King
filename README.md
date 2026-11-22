@@ -92,8 +92,8 @@ blog/                                Project write-up and figures
 The `game/` folder is a git submodule pinned to [rkv-freelancer/Jump-King](https://github.com/rkv-freelancer/Jump-King), so clone recursively:
 
 ```bash
-git clone --recurse-submodules https://github.com/rkv-freelancer/jump_king--personal_project.git
-cd jump_king--personal_project
+git clone --recurse-submodules https://github.com/rkv-freelancer/AI-Plays-Jump-King.git
+cd AI-Plays-Jump-King
 ```
 
 If you already cloned without `--recurse-submodules`, fetch the game with:
