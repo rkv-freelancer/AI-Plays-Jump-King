@@ -26,7 +26,20 @@ from environment.jump_king_env import (
     PRINCESS_X_MIN,
     PRINCESS_Y_MAX,
     MAX_EPISODE_STEPS,
+    POTENTIAL_SCALE,
 )
+
+
+def _phi(heights):
+    """
+    The env's potential Φ(s) for a raw pixel height.
+
+    The env divides `global_height` by POTENTIAL_SCALE so shaping rewards land
+    at O(1) instead of O(100s of pixels). Tests express their expectations
+    through this helper so they keep locking down the *formula* and stay valid
+    if the scale constant is ever retuned.
+    """
+    return np.asarray(heights, dtype=np.float64) / POTENTIAL_SCALE
 
 
 # Convenience: column indices into the (N, 10) raw-state array
@@ -60,11 +73,11 @@ def test_pbrs_formula_matches_gamma_times_h_curr_minus_h_prev(env_multi_mocked, 
     env = env_multi_mocked
     gamma = env.gamma
 
-    # Reset establishes _prev_height = h_curr at reset time
+    # Reset establishes _prev_height = Φ(s) at reset time (in scaled units)
     mock_driver.set_states(_state_batch(heights=[100.0, 200.0, 300.0, 400.0]))
     env.reset()
     prev_h = env._prev_height.copy()
-    assert np.allclose(prev_h, [100.0, 200.0, 300.0, 400.0])
+    assert np.allclose(prev_h, _phi([100.0, 200.0, 300.0, 400.0]))
 
     # Next step: heights move by +10, −5, 0, +20
     new_heights = np.array([110.0, 195.0, 300.0, 420.0], dtype=np.float32)
@@ -73,8 +86,8 @@ def test_pbrs_formula_matches_gamma_times_h_curr_minus_h_prev(env_multi_mocked, 
     actions = np.zeros(4, dtype=np.int64)
     obs, rewards, terminated, truncated, info = env.step(actions)
 
-    # Expected per-agent reward = STEP_PENALTY + (γ·h_curr − h_prev)
-    expected_shaping = gamma * new_heights - prev_h
+    # Expected per-agent reward = STEP_PENALTY + (γ·Φ(s') − Φ(s))
+    expected_shaping = gamma * _phi(new_heights) - prev_h
     expected_reward  = STEP_PENALTY + expected_shaping
 
     np.testing.assert_allclose(rewards, expected_reward, rtol=1e-5, atol=1e-5)
@@ -92,12 +105,14 @@ def test_pbrs_uses_correct_asymmetric_form_not_the_exploit_form(env_multi_mocked
     mock_driver.set_states(_state_batch(heights=[1000.0]*4))
     env.reset()
 
-    # Climb +50 — expected shaping = γ·1050 − 1000 = γ·1050 − 1000
+    # Climb +50 px — expected shaping = γ·Φ(1050) − Φ(1000)
     mock_driver.set_states(_state_batch(heights=[1050.0]*4))
     _, rewards, *_ = env.step(np.zeros(4, dtype=np.int64))
 
-    correct_shaping = gamma * 1050.0 - 1000.0
-    exploit_shaping = gamma * 50.0    # the broken formula's value (γ·height_gain)
+    phi_prev, phi_curr = _phi(1000.0), _phi(1050.0)
+    correct_shaping = gamma * phi_curr - phi_prev
+    # the broken formula's value (γ·height_gain) — must NOT match
+    exploit_shaping = gamma * (phi_curr - phi_prev)
 
     expected = STEP_PENALTY + correct_shaping
     assert np.allclose(rewards, expected, rtol=1e-5)
@@ -136,10 +151,12 @@ def test_climb_fall_cycle_telescopes_to_near_zero(env_multi_mocked, mock_driver)
         shaping = rewards.astype(np.float64) - STEP_PENALTY
         total_shaping += shaping
 
-    # Telescoping bound: total = γ^T·h_T − h_0 = γ·0 − 0 = 0  (per agent)
-    # Allow a small slack for the (1 − γ) corrections accumulated mid-trajectory.
-    # With γ = 0.999 and max h ≈ 300, slack ≲ T·(1−γ)·max_h ≈ 6·0.001·300 ≈ 1.8
-    assert np.all(np.abs(total_shaping) < 5.0), (
+    # Telescoping bound: total = γ^T·Φ_T − Φ_0 = γ·0 − 0 = 0  (per agent)
+    # Slack covers the (1 − γ) corrections accumulated mid-trajectory:
+    #   Σ (1−γ)·Φ_t = 0.001 × Φ(100+200+300+200+100+0) ≈ 0.001 × 1.0 ≈ 1e-3
+    # Bound is derived from the scale so it stays tight if POTENTIAL_SCALE moves.
+    bound = 10.0 * (1.0 - gamma) * _phi(300.0) * len(trajectory)
+    assert np.all(np.abs(total_shaping) < max(bound, 1e-6)), (
         f"climb-fall cycle did NOT telescope; total shaping = {total_shaping}. "
         f"PBRS may be broken — check the formula in step()."
     )
