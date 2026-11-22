@@ -1,3 +1,5 @@
+# Adapted from CleanRL's ppo_rnd_envpool.py — MIT License, Copyright (c) 2019 CleanRL developers.
+# See THIRD_PARTY_NOTICES.md for the full license text.
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo-rnd/#ppo_rnd_envpoolpy
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"   # macOS: suppress duplicate libomp conflict

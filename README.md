@@ -243,3 +243,7 @@ A script would record these from human gameplay:
 - **Jump King** is the original game by Nexile.
 - **[Code Bullet](https://github.com/Code-Bullet/Jump-King)** wrote the p5.js recreation this project's environment is built on.
 - **[CleanRL](https://github.com/vwxyzjn/cleanrl)** (Huang et al., 2022) provided the reference PPO + RND implementation. See [`CITATION.cff`](CITATION.cff) for the full list of references.
+
+## License
+
+The code in this repository is released under the [MIT License](LICENSE). The `game/` submodule and the *Jump King* artwork and sounds are **not** covered by it. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the CleanRL license and details on the game.
