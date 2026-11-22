@@ -59,6 +59,7 @@ training_image = (
     .add_local_dir(str(PROJECT_ROOT / "models"),      remote_path="/root/project/models")
     .add_local_dir(str(PROJECT_ROOT / "configs"),     remote_path="/root/project/configs")
     .add_local_dir(str(PROJECT_ROOT / "tests"),       remote_path="/root/project/tests")
+    .add_local_dir(str(PROJECT_ROOT / "utilities"),   remote_path="/root/project/utilities")
 )
 
 # ── Persistent volume for checkpoints ────────────────────────────────────────
@@ -89,7 +90,7 @@ checkpoints_vol = modal.Volume.from_name(
 def train():
     try:
         subprocess.run(
-            [sys.executable, "models/PPO/ppo_rnd_envpool.py"],
+            [sys.executable, "models/PPO/ppo_rnd_envpool_SIL.py"],
             cwd = "/root/project",
             check = True,
         )
@@ -103,9 +104,11 @@ def train():
 def main():
     # Change GPU 
     print("Submitting training job to Modal (GPU: T4)...")
-    train.remote()
+    call_handle = train.spawn()
+    
+    print(f"Job successfully detached! App ID: {call_handle.object_id}")
+    print(f"Track logs online at: https://modal.com")
     print(
-        "Done.\n"
-        "Download checkpoints with:\n"
+        "\nOnce completed, download checkpoints with:\n"
         "  modal volume get jump-king-checkpoints checkpoints/ ./checkpoints"
     )
