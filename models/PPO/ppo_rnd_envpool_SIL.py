@@ -66,7 +66,7 @@ class Agent(nn.Module):
         )
         
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(256, 256), std=0.01),
+            layer_init(nn.Linear(256, 256),     std=0.01),
             nn.ReLU(),
             layer_init(nn.Linear(256, num_actions), std=0.01),
         )
@@ -663,6 +663,7 @@ if __name__ == "__main__":
         Option B: standard PER max-priority insert: memory.add(b_obs, b_actions, b_sil_returns) → the buffer assigns each new entry self.max_priority, and the real (R−V)₊ gets written later on the first update_priorities (after that entry is first sampled and re-evaluated).  
         """
         
+        # Only add the memory if the learner reached a new level
         # Dim: (batch_size, )
         memory.add(
             obs = b_obs, 
@@ -748,11 +749,9 @@ if __name__ == "__main__":
                     
                 optimizer.step()
 
-            if args.target_kl is not 0.0:
+            if args.target_kl is not None:
                 if approx_kl > args.target_kl:
                     break
-            
-            
             
         #  SIL LOOP (Off-Policy Updates)
         sil_valids, sil_pgs, sil_vs = [], [], []
