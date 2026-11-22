@@ -75,7 +75,7 @@ class Args:
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
     
-    target_kl: float = 0.0
+    target_kl = None
     """the target KL divergence threshold"""
 
     # RND arguments
