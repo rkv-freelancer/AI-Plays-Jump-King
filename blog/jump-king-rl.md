@@ -210,36 +210,9 @@ Here's where training stands, without spin.
 
 Three things stand out. The critic's loss spiked to **~14,400**, a warning sign that rewards were badly scaled. Entropy started near its maximum of ln 6 ≈ 1.79, then dropped after about 5k steps and swung between ~0.9 and ~1.7 for the rest of the run, meaning the policy was committing to favorite actions early. And RND's novelty signal decayed from early spikes of ~0.4 to ~0.01: the agent had already seen everything nearby, and curiosity stopped paying.
 
-The video matched the numbers. Early policies learned to walk right and stay there:
+Early policies learned to walk right and stay there:
 
 ![An early agent pinned against the right wall on the first screen](./assets/level0-agent-pinned-right.jpg)
-
-### Latest run
-
-| | |
-|---|---|
-| Run | **[TODO: W&B run name]** |
-| Steps trained | **[TODO]** |
-| Highest level reached by any agent | **[TODO]** / 43 |
-| Princess reached? | **[TODO]** |
-| Throughput (steps/sec) | **[TODO]** |
-
-<!-- Swap in your exported W&B clips. If your site can't render <video>, use a GIF or a link instead. -->
-<video src="./assets/videos/training-early.mp4" controls muted loop playsinline width="100%"></video>
-
-*Early training: 16 agents exploring the first screens.*
-
-<video src="./assets/videos/training-latest.mp4" controls muted loop playsinline width="100%"></video>
-
-*Latest run.*
-
-<video src="./assets/videos/newlevel-best.mp4" controls muted loop playsinline width="100%"></video>
-
-*The moment an agent first reached its highest level so far (recorded automatically).*
-
-![Highest level reached per episode over training](./assets/wandb-max-level.png)
-
-![How often the policy picks each of the 6 actions over training](./assets/wandb-action-freq.png)
 
 ---
 
