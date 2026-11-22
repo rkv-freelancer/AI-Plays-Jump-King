@@ -6,10 +6,10 @@
 # batch_size = num_envs × num_steps
 # num_updates = total_timesteps ÷ batch_size
 
-# 500k timesteps, vectorised N=16, video-rich for visual diagnosis
+# 2,500,000 timesteps, vectorised N=16, video-rich for visual diagnosis
 # Wall-clock target: ~40-60 min on T4, ~$1 cost
 
-total_timesteps: 2_500_000
+total_timesteps: 5_000_000
 num_envs: 16 # 16 parallel agents in one browser
 num_steps: 64 # → batch_size = 1024, num_updates = 488
 num_minibatches: 4 # → minibatch_size = 256
@@ -24,7 +24,7 @@ gae_lambda: 0.95
 int_gamma: 0.999 # match extrinsic (was 0.99 — be consistent if you want)
 
 clip_coef: 0.1
-clip_vloss: true
+clip_vloss: false
 ent_coef: 0.01 # 10× the dataclass default → combat entropy collapse
 vf_coef: 0.5
 max_grad_norm: 0.5
@@ -37,8 +37,8 @@ update_proportion: 0.25
 num_iterations_obs_norm_init: 10
 
 # ── Checkpoints & videos ─────────────────────────────────────────────
-save_interval: 50 # ~10 checkpoints over the run
-capture_video: true
+save_interval: 30 # ~8 checkpoints over the run
+capture_video: false
 
 # Video timing math (N=16, num_steps=64 → 64 steps/update, 488 updates total):
 #   1 captured frame = 1 env.step.  A clip of L seconds at video_fps captures
